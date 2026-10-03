@@ -314,18 +314,6 @@ La respuesta es un archivo. Un archivo que hace una cosa y la hace bien. Un arch
 
 Eso es lo que un equipo contrata: no un framework, sino **criterio**.
 
----
-
-## 👤 Autor
-
-**David** — AI Engineer
-Especializado en sistemas de IA en producción: RAG, agentes, evaluación y MLOps.
-
-- GitHub: [@david](https://github.com/)
-- LinkedIn: [in/david](https://linkedin.com/)
-- Email: `david@example.com`
-
-Abierto a oportunidades en Madrid, Barcelona o remoto internacional.
 
 ---
 
