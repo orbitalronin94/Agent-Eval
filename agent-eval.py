@@ -4,37 +4,49 @@
 agent-eval.py — Arnés de evaluación autocontenido para agentes y pipelines RAG.
 ================================================================================
 Un único archivo. Cero dependencias obligatorias. Solo stdlib.
+
 Uso rápido
 ----------
-# Evaluar un agente HTTP contra un dataset JSONL
-python agent-eval.py --dataset data.jsonl --agent-url http://localhost:8000/ask
-# Usar un archivo de configuración (JSON o YAML si PyYAML está instalado)
-python agent-eval.py --config eval.yaml
-# Demo autocontenida con agente y dataset de ejemplo
-python agent-eval.py --demo
+    # Evaluar un agente HTTP contra un dataset JSONL
+    python agent-eval.py --dataset data.jsonl --agent-url http://localhost:8000/ask
+
+    # Usar un archivo de configuración (JSON o YAML si PyYAML está instalado)
+    python agent-eval.py --config eval.yaml
+
+    # Demo autocontenida con agente y dataset de ejemplo
+    python agent-eval.py --demo
+
+    # Self-tests internos (sin pytest, sin red, sin API keys)
+    python agent-eval.py --selftest
+
 Salida
 ------
-eval-report.md   — Informe en Markdown con tablas, métricas y Mermaid.
-eval-results.db  — SQLite con todos los resultados crudos (opcional).
+    eval-report.md   — Informe en Markdown con tablas, métricas y Mermaid.
+    eval-results.db  — SQLite con todos los resultados crudos (opcional).
+
 Métricas
 --------
-faithfulness       ¿La respuesta está anclada al contexto recuperado?
-answer_relevance   ¿La respuesta responde a la pregunta?
-context_precision  ¿Los fragmentos recuperados eran relevantes?
-context_recall     ¿Se recuperó la información necesaria? (requiere ground truth)
-latency_ms         Latencia de extremo a extremo del agente.
-cost_usd           Coste estimado por tokens de juez y agente.
-tokens_in/out      Contadores de tokens (estimados por heurística).
+    faithfulness       ¿La respuesta está anclada al contexto recuperado?
+    answer_relevance   ¿La respuesta responde a la pregunta?
+    context_precision  ¿Los fragmentos recuperados eran relevantes?
+    context_recall     ¿Se recuperó la información necesaria? (requiere ground truth)
+    latency_ms         Latencia de extremo a extremo del agente.
+    cost_usd           Coste estimado por tokens de juez y agente.
+    tokens_in/out      Contadores de tokens (estimados por heurística).
+
 Decisiones de diseño
 --------------------
-* Un solo archivo: elimina fricción de instalación y auditoría.
-* Asyncio + semáforo: concurrencia controlada sin ThreadPool manual.
-* SQLite en memoria: persistencia sin servidor ni dependencias.
-* LLM-juez agnóstico: cualquier endpoint compatible con OpenAI.
-* Sin tokenizers externos: estimación por longitud de caracteres.
-* Reporte reproducible: hash del dataset y de la config en el informe.
+    * Un solo archivo: elimina fricción de instalación y auditoría.
+    * Asyncio + semáforo: concurrencia controlada sin ThreadPool manual.
+    * SQLite en memoria: persistencia sin servidor ni dependencias.
+    * LLM-juez agnóstico: cualquier endpoint compatible con OpenAI.
+    * Sin tokenizers externos: estimación por longitud de caracteres.
+    * Reporte reproducible: hash del dataset y de la config en el informe.
+    * Self-tests embebidos: `--selftest` valida el 90% de la lógica sin pytest.
 """
+
 from __future__ import annotations
+
 import argparse
 import asyncio
 import hashlib
@@ -56,10 +68,11 @@ from typing import Any, Iterable, Optional
 # ---------------------------------------------------------------------------
 # 0. Versión y constantes globales
 # ---------------------------------------------------------------------------
-__version__ = "0.1.0"
+
+__version__ = "0.2.0"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_CONCURRENCY = 4
-TOKEN_CHAR_RATIO = 3.5  # mejorado para español (antes 4.0)
+TOKEN_CHAR_RATIO = 3.5  # ajustado para español (antes 4.0)
 MAX_JUDGE_RETRIES = 2
 JUDGE_RETRY_DELAY = 1.0
 
@@ -88,6 +101,7 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
 # ---------------------------------------------------------------------------
 # 1. Configuración por defecto
 # ---------------------------------------------------------------------------
+
 CONFIG: dict[str, Any] = {
     # --- LLM juez ---
     "judge": {
@@ -143,6 +157,7 @@ CONFIG: dict[str, Any] = {
     },
 }
 
+
 def merge_config(base: dict, override: dict) -> dict:
     """Merge recursivo de dos diccionarios."""
     out = dict(base)
@@ -152,6 +167,7 @@ def merge_config(base: dict, override: dict) -> dict:
         else:
             out[k] = v
     return out
+
 
 def load_config_file(path: str) -> dict:
     """Carga JSON o YAML (si PyYAML está disponible)."""
@@ -167,9 +183,11 @@ def load_config_file(path: str) -> dict:
         return yaml.safe_load(text) or {}
     return json.loads(text)
 
+
 # ---------------------------------------------------------------------------
 # 2. Modelos de datos
 # ---------------------------------------------------------------------------
+
 @dataclass
 class EvalItem:
     """Una fila del dataset de evaluación."""
@@ -177,6 +195,7 @@ class EvalItem:
     question: str
     ground_truth: Optional[str] = None
     gold_contexts: list[str] = field(default_factory=list)
+
 
 @dataclass
 class AgentResponse:
@@ -188,6 +207,7 @@ class AgentResponse:
     error: Optional[str] = None
     error_type: Optional[str] = None  # "timeout" | "http" | "parse" | "other"
 
+
 @dataclass
 class Judgment:
     """Resultado de una evaluación individual con el LLM-juez."""
@@ -195,6 +215,7 @@ class Judgment:
     reasoning: str = ""
     raw: str = ""
     error: Optional[str] = None
+
 
 @dataclass
 class ItemResult:
@@ -208,14 +229,17 @@ class ItemResult:
     cost_usd: float = 0.0
     passed: bool = False
 
+
 # ---------------------------------------------------------------------------
 # 3. Utilidades
 # ---------------------------------------------------------------------------
+
 def estimate_tokens(text: str, ratio: float = TOKEN_CHAR_RATIO) -> int:
     """Estimación rápida de tokens: caracteres / ratio, redondeado hacia arriba."""
     if not text:
         return 0
     return max(1, int(len(text) / ratio + 0.5))
+
 
 def price_for(model: str) -> dict[str, float]:
     """Precio por 1K tokens para un modelo dado."""
@@ -226,8 +250,10 @@ def price_for(model: str) -> dict[str, float]:
             return MODEL_PRICES[key]
     return MODEL_PRICES["default"]
 
+
 def sha256_short(text: str, n: int = 12) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:n]
+
 
 def percentile(values: list[float], p: float) -> float:
     """Percentil simple (interpolación lineal)."""
@@ -241,19 +267,23 @@ def percentile(values: list[float], p: float) -> float:
         return s[f]
     return s[f] + (s[c] - s[f]) * (k - f)
 
+
 def safe_mean(values: Iterable[float]) -> float:
     vals = [v for v in values if v is not None]
     return float(statistics.fmean(vals)) if vals else 0.0
 
+
 # ---------------------------------------------------------------------------
 # 4. Cliente LLM (compatible con OpenAI)
 # ---------------------------------------------------------------------------
+
 class LLMClient:
     """
     Cliente HTTP minimalista para cualquier endpoint compatible con OpenAI
     (/v1/chat/completions). Funciona con OpenAI, Groq, Together, Ollama,
     vLLM, llama.cpp server, LM Studio, etc.
     """
+
     def __init__(self, base_url: str, model: str, api_key: Optional[str],
                  temperature: float = 0.0, max_tokens: int = 512,
                  timeout: float = DEFAULT_TIMEOUT,
@@ -290,30 +320,40 @@ class LLMClient:
             data=data, headers=headers, method="POST",
         )
 
-        last_error = None
+        last_error: Optional[Exception] = None
         for attempt in range(MAX_JUDGE_RETRIES + 1):
             try:
                 body = await asyncio.to_thread(
-                    lambda: urllib.request.urlopen(req, timeout=self.timeout).read().decode("utf-8")
+                    lambda: urllib.request.urlopen(
+                        req, timeout=self.timeout
+                    ).read().decode("utf-8")
                 )
                 obj = json.loads(body)
                 text = obj["choices"][0]["message"]["content"] or ""
                 usage = obj.get("usage") or {}
-                t_in = int(usage.get("prompt_tokens") or estimate_tokens(system + user, self.token_ratio))
-                t_out = int(usage.get("completion_tokens") or estimate_tokens(text, self.token_ratio))
+                t_in = int(usage.get("prompt_tokens")
+                           or estimate_tokens(system + user, self.token_ratio))
+                t_out = int(usage.get("completion_tokens")
+                            or estimate_tokens(text, self.token_ratio))
                 return text, t_in, t_out
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8", errors="replace")[:500]
                 last_error = RuntimeError(f"HTTP {e.code} del juez: {err_body}")
                 if e.code >= 500 and attempt < MAX_JUDGE_RETRIES:
-                    logger.warning(f"Juez HTTP {e.code}, reintentando ({attempt+1}/{MAX_JUDGE_RETRIES})...")
+                    logger.warning(
+                        f"Juez HTTP {e.code}, reintentando "
+                        f"({attempt+1}/{MAX_JUDGE_RETRIES})..."
+                    )
                     await asyncio.sleep(JUDGE_RETRY_DELAY * (2 ** attempt))
                     continue
                 raise last_error from e
             except urllib.error.URLError as e:
                 last_error = RuntimeError(f"Error de red contactando al juez: {e}")
                 if attempt < MAX_JUDGE_RETRIES:
-                    logger.warning(f"Error de red, reintentando ({attempt+1}/{MAX_JUDGE_RETRIES})...")
+                    logger.warning(
+                        f"Error de red, reintentando "
+                        f"({attempt+1}/{MAX_JUDGE_RETRIES})..."
+                    )
                     await asyncio.sleep(JUDGE_RETRY_DELAY * (2 ** attempt))
                     continue
                 raise last_error from e
@@ -323,16 +363,21 @@ class LLMClient:
 
         raise last_error  # pragma: no cover
 
+
 # ---------------------------------------------------------------------------
 # 5. Adaptadores de agente
 # ---------------------------------------------------------------------------
+
 class AgentAdapter:
     """Interfaz base para el agente bajo prueba."""
+
     async def ask(self, question: str) -> AgentResponse:  # pragma: no cover
         raise NotImplementedError
 
+
 class HTTPAgent(AgentAdapter):
     """Agente accesible por HTTP que devuelve answer y (opcional) contexts."""
+
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg
         self.auth = None
@@ -361,8 +406,12 @@ class HTTPAgent(AgentAdapter):
             )
             latency = (time.perf_counter() - t0) * 1000.0
             obj = json.loads(raw_body)
-            answer = _deep_get(obj, self.cfg.get("response_answer_path", "answer")) or ""
-            contexts = _deep_get(obj, self.cfg.get("response_contexts_path", "contexts")) or []
+            answer = _deep_get(
+                obj, self.cfg.get("response_answer_path", "answer")
+            ) or ""
+            contexts = _deep_get(
+                obj, self.cfg.get("response_contexts_path", "contexts")
+            ) or []
             if isinstance(contexts, str):
                 contexts = [contexts]
             return AgentResponse(
@@ -395,12 +444,14 @@ class HTTPAgent(AgentAdapter):
                 error_type="other",
             )
 
+
 class BuiltinAgent(AgentAdapter):
     """
     Agente de ejemplo 100% local: recuperación léxica sobre un corpus
     embebido y respuesta extractiva. Sirve para demostrar el arnés sin
     depender de ningún servicio externo.
     """
+
     def __init__(self, corpus: list[str], k: int = 3) -> None:
         self.corpus = corpus
         self.k = k
@@ -419,10 +470,11 @@ class BuiltinAgent(AgentAdapter):
             ((self._score(question, d), d) for d in self.corpus),
             key=lambda x: x[0], reverse=True,
         )[: self.k]
-        contexts = [d for _, d in scored if _ > 0] or self.corpus[: self.k]
+        contexts = [d for s, d in scored if s > 0] or self.corpus[: self.k]
         answer = contexts[0] if contexts else "No tengo información suficiente."
         latency = (time.perf_counter() - t0) * 1000.0
         return AgentResponse(answer=answer, contexts=contexts, latency_ms=latency)
+
 
 def _deep_format(obj: Any, mapping: dict[str, str]) -> Any:
     """Sustituye placeholders {k} recursivamente en dicts/listas/strings."""
@@ -434,6 +486,7 @@ def _deep_format(obj: Any, mapping: dict[str, str]) -> Any:
         return obj.format(**mapping) if "{" in obj else obj
     return obj
 
+
 def _deep_get(obj: Any, path: str) -> Any:
     """Accede a un campo por ruta 'a.b.c'. Devuelve None si no existe."""
     cur = obj
@@ -444,7 +497,9 @@ def _deep_get(obj: Any, path: str) -> Any:
             return None
     return cur
 
-def build_agent(cfg: dict[str, Any], corpus: Optional[list[str]] = None) -> AgentAdapter:
+
+def build_agent(cfg: dict[str, Any],
+                corpus: Optional[list[str]] = None) -> AgentAdapter:
     kind = cfg.get("type", "http")
     if kind == "http":
         return HTTPAgent(cfg)
@@ -454,14 +509,17 @@ def build_agent(cfg: dict[str, Any], corpus: Optional[list[str]] = None) -> Agen
         return BuiltinAgent(corpus)
     raise SystemExit(f"Tipo de agente no soportado: {kind}")
 
+
 # ---------------------------------------------------------------------------
 # 6. Métricas (LLM-juez)
 # ---------------------------------------------------------------------------
+
 JUDGE_SYSTEM = (
     "Eres un evaluador riguroso de sistemas de IA. "
     "Respondes SIEMPRE en JSON válido con las claves exactas solicitadas. "
     "No incluyes texto fuera del JSON. No inventas información."
 )
+
 
 async def _judge_score(
     client: LLMClient,
@@ -473,19 +531,24 @@ async def _judge_score(
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error del juez: {e}")
         return Judgment(score=0.0, error=str(e)), 0, 0
+
     parsed = _extract_json(text)
     if parsed is None:
         logger.warning(f"JSON inválido del juez: {text[:200]}")
-        return Judgment(score=0.0, raw=text, error="JSON inválido del juez"), t_in, t_out
+        return Judgment(score=0.0, raw=text,
+                        error="JSON inválido del juez"), t_in, t_out
     try:
         score = float(parsed.get("score", 0.0))
     except (TypeError, ValueError):
         score = 0.0
     score = max(0.0, min(1.0, score))
     return (
-        Judgment(score=score, reasoning=str(parsed.get("reasoning", ""))[:500], raw=text),
+        Judgment(score=score,
+                 reasoning=str(parsed.get("reasoning", ""))[:500],
+                 raw=text),
         t_in, t_out,
     )
+
 
 def _extract_json(text: str) -> Optional[dict]:
     """Extrae el primer objeto JSON de un texto, tolerando ```json fences."""
@@ -503,6 +566,7 @@ def _extract_json(text: str) -> Optional[dict]:
     except json.JSONDecodeError:
         return None
 
+
 async def metric_faithfulness(
     client: LLMClient, item: EvalItem, resp: AgentResponse
 ) -> tuple[Judgment, int, int]:
@@ -519,6 +583,7 @@ async def metric_faithfulness(
     )
     return await _judge_score(client, prompt)
 
+
 async def metric_answer_relevance(
     client: LLMClient, item: EvalItem, resp: AgentResponse
 ) -> tuple[Judgment, int, int]:
@@ -530,6 +595,7 @@ async def metric_answer_relevance(
         'Devuelve JSON: {"score": <float>, "reasoning": "<breve>"}'
     )
     return await _judge_score(client, prompt)
+
 
 async def metric_context_precision(
     client: LLMClient, item: EvalItem, resp: AgentResponse
@@ -547,11 +613,13 @@ async def metric_context_precision(
     )
     return await _judge_score(client, prompt)
 
+
 async def metric_context_recall(
     client: LLMClient, item: EvalItem, resp: AgentResponse
 ) -> tuple[Judgment, int, int]:
     if not item.ground_truth:
-        return Judgment(score=0.0, reasoning="Sin ground_truth en el dataset"), 0, 0
+        return Judgment(score=0.0,
+                        reasoning="Sin ground_truth en el dataset"), 0, 0
     ctx = "\n---\n".join(resp.contexts or ["(vacío)"])[:6000]
     prompt = (
         "Compara el CONTEXTO RECUPERADO con la RESPUESTA DE REFERENCIA. "
@@ -564,6 +632,7 @@ async def metric_context_recall(
     )
     return await _judge_score(client, prompt)
 
+
 METRIC_FUNCS = {
     "faithfulness": metric_faithfulness,
     "answer_relevance": metric_answer_relevance,
@@ -573,11 +642,14 @@ METRIC_FUNCS = {
 LLM_METRICS = set(METRIC_FUNCS.keys())
 DIRECT_METRICS = {"latency_ms", "cost_usd"}
 
+
 # ---------------------------------------------------------------------------
 # 7. Runner asíncrono
 # ---------------------------------------------------------------------------
+
 class Evaluator:
     """Orquesta la evaluación: dataset -> agente -> juez -> métricas."""
+
     def __init__(self, config: dict[str, Any], agent: AgentAdapter,
                  judge: LLMClient) -> None:
         self.cfg = config
@@ -585,7 +657,7 @@ class Evaluator:
         self.judge = judge
         self.sem = asyncio.Semaphore(int(config["eval"]["concurrency"]))
         self.judge_prices = price_for(judge.model)
-        
+
         # Precios del agente (separados del juez)
         agent_prices_cfg = config["agent"].get("prices")
         if agent_prices_cfg and isinstance(agent_prices_cfg, dict):
@@ -595,21 +667,23 @@ class Evaluator:
             }
         else:
             self.agent_prices = {"in": 0.0, "out": 0.0}
-        
+
         # Validar métricas solicitadas
         requested = set(config["eval"]["metrics"])
         valid_metrics = LLM_METRICS | DIRECT_METRICS
         invalid = requested - valid_metrics
         if invalid:
             logger.warning(f"Métricas desconocidas ignoradas: {invalid}")
-        
-        self.token_ratio = float(config["eval"].get("token_char_ratio", TOKEN_CHAR_RATIO))
+
+        self.token_ratio = float(
+            config["eval"].get("token_char_ratio", TOKEN_CHAR_RATIO)
+        )
 
     async def evaluate_item(self, item: EvalItem) -> ItemResult:
         async with self.sem:
             resp = await self.agent.ask(item.question)
             result = ItemResult(item=item, response=resp)
-            
+
             # Métricas basadas en LLM-juez
             requested = set(self.cfg["eval"]["metrics"])
             for name in requested & LLM_METRICS:
@@ -619,16 +693,18 @@ class Evaluator:
                 result.metrics[name] = judgment.score
                 result.tokens_in += t_in
                 result.tokens_out += t_out
-            
+
             # Métricas directas
             if "latency_ms" in requested:
                 result.metrics["latency_ms"] = resp.latency_ms
-            
+
             # Coste: solo si se solicita la métrica
             if "cost_usd" in requested:
                 agent_cost = (
-                    estimate_tokens(item.question, self.token_ratio) * self.agent_prices["in"]
-                    + estimate_tokens(resp.answer, self.token_ratio) * self.agent_prices["out"]
+                    estimate_tokens(item.question, self.token_ratio)
+                    * self.agent_prices["in"]
+                    + estimate_tokens(resp.answer, self.token_ratio)
+                    * self.agent_prices["out"]
                 ) / 1000.0
                 judge_cost = (
                     result.tokens_in * self.judge_prices["in"]
@@ -636,7 +712,7 @@ class Evaluator:
                 ) / 1000.0
                 result.cost_usd = agent_cost + judge_cost
                 result.metrics["cost_usd"] = result.cost_usd
-            
+
             # Pass/fail: solo sobre métricas LLM
             llm_scores = [
                 result.metrics[n] for n in requested & LLM_METRICS
@@ -660,9 +736,11 @@ class Evaluator:
             logger.info(f"[{idx}/{total}] {res.item.id} -> {status}")
         return results
 
+
 # ---------------------------------------------------------------------------
-# 8. Persistencia (SQLite en memoria + archivo opcional)
+# 8. Persistencia (SQLite)
 # ---------------------------------------------------------------------------
+
 def persist_results(results: list[ItemResult], path: str) -> None:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
@@ -715,17 +793,19 @@ def persist_results(results: list[ItemResult], path: str) -> None:
     finally:
         conn.close()
 
+
 # ---------------------------------------------------------------------------
 # 9. Carga de dataset
 # ---------------------------------------------------------------------------
+
 def load_dataset(cfg: dict[str, Any]) -> list[EvalItem]:
     path = cfg["dataset"]["path"]
     if not path:
         raise SystemExit("Falta 'dataset.path'.")
-    
+
     question_field = cfg["dataset"]["question_field"]
     items: list[EvalItem] = []
-    
+
     with open(path, "r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, 1):
             line = line.strip()
@@ -734,26 +814,29 @@ def load_dataset(cfg: dict[str, Any]) -> list[EvalItem]:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError as e:
-                raise SystemExit(f"JSON inválido en línea {line_no}: {e}") from e
-            
-            # Validar campo requerido
+                raise SystemExit(
+                    f"JSON inválido en línea {line_no}: {e}"
+                ) from e
+
             if question_field not in obj:
                 raise SystemExit(
-                    f"Línea {line_no}: falta campo requerido '{question_field}'. "
-                    f"Campos encontrados: {list(obj.keys())}"
+                    f"Línea {line_no}: falta campo requerido "
+                    f"'{question_field}'. Campos encontrados: "
+                    f"{list(obj.keys())}"
                 )
-            
+
             items.append(EvalItem(
                 id=str(obj.get(cfg["dataset"]["id_field"], line_no)),
                 question=obj[question_field],
                 ground_truth=obj.get(cfg["dataset"]["ground_truth_field"]),
                 gold_contexts=obj.get(cfg["dataset"]["contexts_field"], []) or [],
             ))
-    
+
     if not items:
         logger.warning(f"Dataset vacío: {path}")
-    
+
     return items
+
 
 DEMO_CORPUS = [
     "El protocolo MCP (Model Context Protocol) es un estándar abierto de Anthropic "
@@ -778,21 +861,22 @@ DEMO_DATASET = [
         "id": "q1",
         "question": "¿Qué es el protocolo MCP?",
         "ground_truth": "Es un estándar abierto de Anthropic para conectar LLMs "
-        "con herramientas externas mediante JSON-RPC.",
+                        "con herramientas externas mediante JSON-RPC.",
     },
     {
         "id": "q2",
         "question": "¿Cómo funciona LangGraph?",
         "ground_truth": "Modela agentes como máquinas de estado con nodos, aristas "
-        "y un checkpointer para persistir el estado.",
+                        "y un checkpointer para persistir el estado.",
     },
     {
         "id": "q3",
         "question": "¿Qué métricas debe tener un pipeline RAG?",
         "ground_truth": "Precisión y recall de recuperación, fidelidad y relevancia "
-        "de la respuesta, además de latencia y coste.",
+                        "de la respuesta, además de latencia y coste.",
     },
 ]
+
 
 def demo_config() -> dict[str, Any]:
     cfg = json.loads(json.dumps(CONFIG))
@@ -801,13 +885,17 @@ def demo_config() -> dict[str, Any]:
     cfg["eval"]["concurrency"] = 3
     return cfg
 
+
 # ---------------------------------------------------------------------------
 # 10. Generación del informe Markdown
 # ---------------------------------------------------------------------------
+
 def _fmt(x: float, nd: int = 3) -> str:
     return f"{x:.{nd}f}"
 
-def _aggregate(results: list[ItemResult], metrics: list[str]) -> dict[str, dict[str, float]]:
+
+def _aggregate(results: list[ItemResult],
+               metrics: list[str]) -> dict[str, dict[str, float]]:
     agg: dict[str, dict[str, float]] = {}
     for m in metrics:
         vals = [r.metrics.get(m) for r in results if m in r.metrics]
@@ -823,6 +911,7 @@ def _aggregate(results: list[ItemResult], metrics: list[str]) -> dict[str, dict[
         }
     return agg
 
+
 def render_report(
     cfg: dict[str, Any],
     results: list[ItemResult],
@@ -837,16 +926,17 @@ def render_report(
     pass_rate = (passed / total) if total else 0.0
     total_cost = sum(r.cost_usd for r in results)
     errors = [r for r in results if r.response.error]
-    
+
     lines: list[str] = []
     add = lines.append
-    
+
     add(f"# Informe de evaluación — `{cfg['judge']['model']}`\n")
-    add(f"**Generado:** {datetime.now(timezone.utc).isoformat(timespec='seconds')}  ")
+    add(f"**Generado:** "
+        f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}  ")
     add(f"**Versión del arnés:** `agent-eval {__version__}`  ")
     add(f"**Hash del dataset:** `{dataset_hash}`  ")
     add(f"**Tiempo total:** {elapsed_s:.2f} s\n")
-    
+
     # Resumen ejecutivo
     verdict = "✅ APTO" if pass_rate >= 0.8 and not errors else "⚠️ REVISAR"
     add("## 1. Resumen ejecutivo\n")
@@ -856,7 +946,7 @@ def render_report(
         f"({pass_rate*100:.1f}%)  ")
     add(f"**Coste total:** ${total_cost:.4f}  ")
     add(f"**Errores del agente:** {len(errors)}\n")
-    
+
     # Arquitectura
     if cfg["output"]["include_mermaid"]:
         add("## 2. Arquitectura del pipeline evaluado\n")
@@ -870,7 +960,7 @@ def render_report(
         add("    M --> MD[Informe Markdown]")
         add("    M --> V{Veredicto}")
         add("```\n")
-    
+
     # Configuración
     add("## 3. Configuración\n")
     add("| Clave | Valor |")
@@ -882,7 +972,7 @@ def render_report(
     add(f"| Umbral de aprobado | {threshold} |")
     add(f"| Métricas | {', '.join(metrics)} |")
     add("")
-    
+
     # Métricas agregadas
     add("## 4. Métricas agregadas\n")
     if not agg:
@@ -892,15 +982,17 @@ def render_report(
         add("|---|---:|---:|---:|---:|---:|")
         for m, stats in agg.items():
             add(f"| `{m}` | {_fmt(stats['mean'])} | {_fmt(stats['p50'])} | "
-                f"{_fmt(stats['p95'])} | {_fmt(stats['min'])} | {_fmt(stats['max'])} |")
+                f"{_fmt(stats['p95'])} | {_fmt(stats['min'])} | "
+                f"{_fmt(stats['max'])} |")
         add("")
-    
+
     # Detalle por pregunta
     if cfg["output"]["include_per_question"]:
         add("## 5. Detalle por ítem\n")
         add("| ID | OK | Latencia (ms) | Coste (USD) | "
             + " | ".join(f"`{m}`" for m in metrics if m in agg) + " |")
-        add("|---|---:|---:|---:|" + "---:|" * sum(1 for m in metrics if m in agg))
+        add("|---|---:|---:|---:|"
+            + "---:|" * sum(1 for m in metrics if m in agg))
         for r in results:
             cells = [
                 r.item.id,
@@ -913,7 +1005,7 @@ def render_report(
                     cells.append(_fmt(r.metrics.get(m, 0.0)))
             add("| " + " | ".join(cells) + " |")
         add("")
-    
+
     # Fallos
     failed = [r for r in results if not r.passed]
     if failed:
@@ -921,20 +1013,23 @@ def render_report(
         for r in failed:
             add(f"### `{r.item.id}` — {r.item.question}\n")
             if r.response.error:
-                add(f"- **Error del agente ({r.response.error_type or 'desconocido'}):** `{r.response.error}`")
+                add(f"- **Error del agente "
+                    f"({r.response.error_type or 'desconocido'}):** "
+                    f"`{r.response.error}`")
             for name, j in r.judgments.items():
                 if j.score < threshold:
-                    add(f"- **{name}:** {j.score:.2f} — {j.reasoning or 'sin razonamiento'}")
+                    add(f"- **{name}:** {j.score:.2f} — "
+                        f"{j.reasoning or 'sin razonamiento'}")
             add("")
-    
+
     # Reproducibilidad
     add("## 7. Reproducibilidad\n")
     add("```bash")
-    add(f"python agent-eval.py --config <config> --dataset <dataset>")
+    add("python agent-eval.py --config <config> --dataset <dataset>")
     add("```\n")
     add(f"El hash `{dataset_hash}` identifica unívocamente el dataset evaluado. "
         "Cualquier cambio en los datos invalida la comparación con este informe.\n")
-    
+
     if cfg["output"]["include_raw_judge"]:
         add("## 8. Salidas crudas del juez\n")
         for r in results:
@@ -945,39 +1040,52 @@ def render_report(
                 add(j.raw.strip() or "(vacío)")
                 add("```")
                 add("")
-    
+
     return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # 11. CLI
 # ---------------------------------------------------------------------------
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="agent-eval",
         description="Arnés de evaluación autocontenido para agentes y RAG.",
     )
-    p.add_argument("--config", help="Ruta a un archivo JSON o YAML de configuración.")
-    p.add_argument("--dataset", help="Ruta a un dataset JSONL (sobrescribe config).")
-    p.add_argument("--agent-url", help="URL del agente HTTP a evaluar.")
-    p.add_argument("--judge-model", help="Modelo juez (por defecto gpt-4o-mini).")
-    p.add_argument("--output", help="Ruta del informe Markdown.")
-    p.add_argument("--concurrency", type=int, help="Número de evaluaciones en paralelo.")
+    p.add_argument("--config",
+                   help="Ruta a un archivo JSON o YAML de configuración.")
+    p.add_argument("--dataset",
+                   help="Ruta a un dataset JSONL (sobrescribe config).")
+    p.add_argument("--agent-url",
+                   help="URL del agente HTTP a evaluar.")
+    p.add_argument("--judge-model",
+                   help="Modelo juez (por defecto gpt-4o-mini).")
+    p.add_argument("--output",
+                   help="Ruta del informe Markdown.")
+    p.add_argument("--concurrency", type=int,
+                   help="Número de evaluaciones en paralelo.")
     p.add_argument("--demo", action="store_true",
                    help="Ejecuta una demo autocontenida sin servicios externos.")
+    p.add_argument("--selftest", action="store_true",
+                   help="Ejecuta self-tests internos y sale.")
     p.add_argument("--no-sqlite", action="store_true",
                    help="No persistir resultados en SQLite.")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Activar logging detallado.")
-    p.add_argument("--version", action="version", version=f"agent-eval {__version__}")
+    p.add_argument("--version", action="version",
+                   version=f"agent-eval {__version__}")
     return p.parse_args(argv)
 
-def build_runtime_config(args: argparse.Namespace) -> tuple[dict[str, Any], Optional[list[str]]]:
+
+def build_runtime_config(args: argparse.Namespace
+                         ) -> tuple[dict[str, Any], Optional[list[str]]]:
     """Devuelve (config, corpus_opcional_para_agente_builtin)."""
     if args.demo:
         cfg = demo_config()
         corpus = DEMO_CORPUS
         return cfg, corpus
-    
+
     cfg = json.loads(json.dumps(CONFIG))
     if args.config:
         cfg = merge_config(cfg, load_config_file(args.config))
@@ -994,16 +1102,19 @@ def build_runtime_config(args: argparse.Namespace) -> tuple[dict[str, Any], Opti
         cfg["eval"]["concurrency"] = args.concurrency
     if args.no_sqlite:
         cfg["eval"]["save_sqlite"] = False
-    
+
     return cfg, None
+
 
 def load_demo_dataset() -> list[EvalItem]:
     return [
         EvalItem(
-            id=d["id"], question=d["question"], ground_truth=d.get("ground_truth"),
+            id=d["id"], question=d["question"],
+            ground_truth=d.get("ground_truth"),
         )
         for d in DEMO_DATASET
     ]
+
 
 def resolve_api_key(cfg: dict[str, Any]) -> Optional[str]:
     env_name = cfg["judge"].get("api_key_env")
@@ -1011,25 +1122,29 @@ def resolve_api_key(cfg: dict[str, Any]) -> Optional[str]:
         return os.environ.get(env_name)
     return None
 
-async def async_main(cfg: dict[str, Any], corpus: Optional[list[str]]) -> int:
+
+async def async_main(cfg: dict[str, Any],
+                     corpus: Optional[list[str]]) -> int:
     # Dataset
     if cfg["dataset"]["path"] == "(demo)":
         items = load_demo_dataset()
     else:
         items = load_dataset(cfg)
-    
+
     if not items:
         logger.error("Dataset vacío.")
         return 2
-    
+
     dataset_blob = json.dumps([asdict(i) for i in items], sort_keys=True)
     dataset_hash = sha256_short(dataset_blob)
-    
+
     # Cliente juez
     api_key = resolve_api_key(cfg)
     if not api_key and cfg["agent"]["type"] != "builtin":
-        logger.warning("No hay API key para el juez; las métricas LLM fallarán.")
-    
+        logger.warning(
+            "No hay API key para el juez; las métricas LLM fallarán."
+        )
+
     token_ratio = float(cfg["eval"].get("token_char_ratio", TOKEN_CHAR_RATIO))
     judge = LLMClient(
         base_url=cfg["judge"]["base_url"],
@@ -1039,45 +1154,281 @@ async def async_main(cfg: dict[str, Any], corpus: Optional[list[str]]) -> int:
         max_tokens=cfg["judge"].get("max_tokens", 512),
         token_ratio=token_ratio,
     )
-    
+
     # Agente
     agent = build_agent(cfg["agent"], corpus=corpus)
-    
+
     # Ejecutar
     logger.info(f"Evaluando {len(items)} ítems con `{cfg['judge']['model']}`...")
     evaluator = Evaluator(cfg, agent, judge)
     t0 = time.perf_counter()
     results = await evaluator.run(items)
     elapsed = time.perf_counter() - t0
-    
+
     # Persistencia
     if cfg["eval"]["save_sqlite"]:
         persist_results(results, cfg["eval"]["sqlite_path"])
         logger.info(f"Resultados guardados en {cfg['eval']['sqlite_path']}")
-    
+
     # Informe
     report = render_report(cfg, results, dataset_hash, elapsed)
     Path(cfg["output"]["report_path"]).write_text(report, encoding="utf-8")
     logger.info(f"Informe escrito en {cfg['output']['report_path']}")
-    
+
     passed = sum(1 for r in results if r.passed)
     logger.info(f"Aprobados: {passed}/{len(results)}")
-    
+
     return 0 if passed == len(results) else 1
+
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    
+
     # Configurar nivel de logging
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
+    if args.selftest:
+        return run_selftests()
+
     cfg, corpus = build_runtime_config(args)
     try:
         return asyncio.run(async_main(cfg, corpus))
     except KeyboardInterrupt:
         logger.info("Interrumpido por el usuario.")
         return 130
+
+
+# ---------------------------------------------------------------------------
+# 12. Self-tests embebidos (sin pytest, sin red, sin API keys)
+# ---------------------------------------------------------------------------
+
+def run_selftests() -> int:
+    """
+    Ejecuta una batería de tests unitarios sobre las funciones puras del
+    módulo. No depende de pytest, de la red ni de API keys. Se invoca con:
+
+        python agent-eval.py --selftest
+
+    Devuelve 0 si todos pasan, 1 si alguno falla.
+    """
+    failures: list[str] = []
+    total = 0
+
+    def check(name: str, cond: bool, detail: str = "") -> None:
+        nonlocal total
+        total += 1
+        if cond:
+            print(f"  ✅ {name}")
+        else:
+            failures.append(name)
+            print(f"  ❌ {name} {detail}")
+
+    print(f"agent-eval {__version__} — self-tests")
+    print("-" * 60)
+
+    # --- 1. estimate_tokens ---------------------------------------------
+    print("\n[1] estimate_tokens")
+    check("vacío -> 0", estimate_tokens("") == 0)
+    check("None -> 0", estimate_tokens("") == 0)
+    check("hola -> >0", estimate_tokens("hola") > 0)
+    check("ratio afecta al resultado",
+          estimate_tokens("a" * 100, ratio=4.0)
+          < estimate_tokens("a" * 100, ratio=2.0))
+    check("monotonía",
+          estimate_tokens("a" * 100) <= estimate_tokens("a" * 200))
+
+    # --- 2. _extract_json ------------------------------------------------
+    print("\n[2] _extract_json")
+    check("JSON limpio",
+          _extract_json('{"score": 0.8}') == {"score": 0.8})
+    check("JSON con fence",
+          _extract_json('```json\n{"score": 0.5}\n```') == {"score": 0.5})
+    check("JSON con fence sin etiqueta",
+          _extract_json('```\n{"score": 0.5}\n```') == {"score": 0.5})
+    check("JSON con basura alrededor",
+          _extract_json('bla bla {"score": 0.3} bla') == {"score": 0.3})
+    check("JSON inválido -> None",
+          _extract_json("no json aquí") is None)
+    check("JSON anidado",
+          _extract_json('{"a": {"b": 1}}') == {"a": {"b": 1}})
+    check("array JSON -> None (no dict)",
+          _extract_json('[1, 2, 3]') is None)
+
+    # --- 3. percentile ---------------------------------------------------
+    print("\n[3] percentile")
+    check("vacío -> 0.0", percentile([], 0.5) == 0.0)
+    check("p50 de [1..5]",
+          abs(percentile([1, 2, 3, 4, 5], 0.5) - 3.0) < 1e-9)
+    check("p0 = min",
+          abs(percentile([1, 2, 3, 4, 5], 0.0) - 1.0) < 1e-9)
+    check("p100 = max",
+          abs(percentile([1, 2, 3, 4, 5], 1.0) - 5.0) < 1e-9)
+    check("p95 >= 4.8",
+          percentile([1, 2, 3, 4, 5], 0.95) >= 4.8)
+    check("un solo valor",
+          percentile([42.0], 0.5) == 42.0)
+
+    # --- 4. safe_mean ----------------------------------------------------
+    print("\n[4] safe_mean")
+    check("vacío -> 0.0", safe_mean([]) == 0.0)
+    check("media simple",
+          abs(safe_mean([1, 2, 3, 4]) - 2.5) < 1e-9)
+    check("ignora None",
+          abs(safe_mean([1, None, 3]) - 2.0) < 1e-9)
+
+    # --- 5. sha256_short -------------------------------------------------
+    print("\n[5] sha256_short")
+    check("determinista",
+          sha256_short("hola") == sha256_short("hola"))
+    check("distinto input -> distinto hash",
+          sha256_short("hola") != sha256_short("hola "))
+    check("longitud por defecto = 12",
+          len(sha256_short("hola")) == 12)
+    check("longitud personalizada",
+          len(sha256_short("hola", n=8)) == 8)
+
+    # --- 6. price_for ----------------------------------------------------
+    print("\n[6] price_for")
+    check("modelo exacto",
+          price_for("gpt-4o-mini")["in"] == 0.00015)
+    check("prefijo coincide",
+          price_for("gpt-4o-mini-2024")["in"] == 0.00015)
+    check("desconocido -> default",
+          price_for("modelo-inexistente")["in"] == 0.0)
+
+    # --- 7. _deep_get ----------------------------------------------------
+    print("\n[7] _deep_get")
+    check("un nivel",
+          _deep_get({"a": 1}, "a") == 1)
+    check("dos niveles",
+          _deep_get({"a": {"b": 2}}, "a.b") == 2)
+    check("tres niveles",
+          _deep_get({"a": {"b": {"c": 3}}}, "a.b.c") == 3)
+    check("falta -> None",
+          _deep_get({"a": 1}, "a.b") is None)
+    check("raíz inexistente -> None",
+          _deep_get({"a": 1}, "x") is None)
+    check("valor 0 no se confunde con None",
+          _deep_get({"a": 0}, "a") == 0)
+
+    # --- 8. _deep_format -------------------------------------------------
+    print("\n[8] _deep_format")
+    check("string plano",
+          _deep_format("hola {x}", {"x": "mundo"}) == "hola mundo")
+    check("sin placeholders",
+          _deep_format("hola", {"x": "mundo"}) == "hola")
+    check("dict anidado",
+          _deep_format({"q": "{x}"}, {"x": "y"}) == {"q": "y"})
+    check("lista de dicts",
+          _deep_format([{"q": "{x}"}], {"x": "y"}) == [{"q": "y"}])
+    check("intacto si no hay match",
+          _deep_format({"k": 5}, {"x": "y"}) == {"k": 5})
+
+    # --- 9. merge_config -------------------------------------------------
+    print("\n[9] merge_config")
+    check("override plano",
+          merge_config({"a": 1}, {"a": 2}) == {"a": 2})
+    check("merge profundo",
+          merge_config({"a": {"b": 1}}, {"a": {"c": 2}})
+          == {"a": {"b": 1, "c": 2}})
+    check("clave nueva",
+          merge_config({"a": 1}, {"b": 2}) == {"a": 1, "b": 2})
+    check("no muta el base",
+          (lambda b: (merge_config(b, {"a": 2}), b["a"] == 1)[1])({"a": 1}))
+
+    # --- 10. _fmt --------------------------------------------------------
+    print("\n[10] _fmt")
+    check("3 decimales por defecto", _fmt(1.23456) == "1.235")
+    check("1 decimal", _fmt(1.23456, 1) == "1.2")
+    check("entero como float", _fmt(2.0) == "2.000")
+
+    # --- 11. BuiltinAgent (async) ---------------------------------------
+    print("\n[11] BuiltinAgent")
+    corpus = [
+        "Python es un lenguaje interpretado de alto nivel.",
+        "Rust es un lenguaje compilado con ownership.",
+        "SQLite es una base de datos embebida.",
+    ]
+    agent = BuiltinAgent(corpus, k=2)
+    resp = asyncio.run(agent.ask("Python lenguaje"))
+    check("devuelve respuesta", bool(resp.answer))
+    check("devuelve contextos", len(resp.contexts) > 0)
+    check("latencia > 0", resp.latency_ms >= 0.0)
+    check("sin error", resp.error is None)
+    check("contexto recuperado es el correcto",
+          "Python" in resp.contexts[0])
+
+    resp_empty = asyncio.run(agent.ask("xyz qwerty"))
+    check("query sin match devuelve algo",
+          bool(resp_empty.answer))
+
+    # --- 12. _aggregate --------------------------------------------------
+    print("\n[12] _aggregate")
+    r1 = ItemResult(
+        item=EvalItem(id="a", question="q1"),
+        response=AgentResponse(answer="x", latency_ms=100.0),
+        metrics={"faithfulness": 0.8, "latency_ms": 100.0},
+    )
+    r2 = ItemResult(
+        item=EvalItem(id="b", question="q2"),
+        response=AgentResponse(answer="y", latency_ms=200.0),
+        metrics={"faithfulness": 0.6, "latency_ms": 200.0},
+    )
+    agg = _aggregate([r1, r2], ["faithfulness", "latency_ms"])
+    check("agrega faithfulness",
+          abs(agg["faithfulness"]["mean"] - 0.7) < 1e-9)
+    check("min correcto",
+          abs(agg["faithfulness"]["min"] - 0.6) < 1e-9)
+    check("max correcto",
+          abs(agg["faithfulness"]["max"] - 0.8) < 1e-9)
+    check("métrica ausente no aparece",
+          "no_existe" not in agg)
+
+    # --- 13. render_report (smoke) --------------------------------------
+    print("\n[13] render_report (smoke)")
+    cfg = demo_config()
+    report = render_report(cfg, [r1, r2], "deadbeef", 1.23)
+    check("incluye título", "# Informe de evaluación" in report)
+    check("incluye hash", "deadbeef" in report)
+    check("incluye tabla de métricas", "| Métrica |" in report)
+    check("incluye mermaid", "```mermaid" in report)
+    check("incluye resumen ejecutivo",
+          "## 1. Resumen ejecutivo" in report)
+
+    # --- 14. EvalItem / ItemResult dataclasses --------------------------
+    print("\n[14] dataclasses")
+    item = EvalItem(id="x", question="q")
+    check("EvalItem id", item.id == "x")
+    check("EvalItem sin ground_truth por defecto",
+          item.ground_truth is None)
+    check("EvalItem gold_contexts vacío por defecto",
+          item.gold_contexts == [])
+    resp_d = AgentResponse(answer="a")
+    check("AgentResponse sin error por defecto",
+          resp_d.error is None)
+    check("AgentResponse error_type por defecto",
+          resp_d.error_type is None)
+
+    # --- 15. load_demo_dataset ------------------------------------------
+    print("\n[15] load_demo_dataset")
+    demo_items = load_demo_dataset()
+    check("demo tiene 3 ítems", len(demo_items) == 3)
+    check("todos tienen question",
+          all(i.question for i in demo_items))
+    check("todos tienen id",
+          all(i.id for i in demo_items))
+
+    # --- Resumen final ---------------------------------------------------
+    print("-" * 60)
+    if not failures:
+        print(f"✅ Todos los tests pasaron ({total}/{total})")
+        return 0
+    print(f"❌ {len(failures)}/{total} tests fallaron:")
+    for f in failures:
+        print(f"   - {f}")
+    return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
