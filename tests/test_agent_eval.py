@@ -601,4 +601,84 @@ class TestLoadDataset:
 
 # ===========================================================================
 # 11. render_report
-# ========================
+# ===========================================================================
+
+class TestRenderReport:
+    def _cfg(self):
+        cfg = json.loads(json.dumps(ae.CONFIG))
+        cfg["eval"]["metrics"] = ["faithfulness"]
+        return cfg
+
+    def _result(self, score: float, passed: bool):
+        return ae.ItemResult(
+            item=ae.EvalItem(id="q1", question="¿?"),
+            response=ae.AgentResponse(
+                answer="a", contexts=["c"], latency_ms=10.0,
+            ),
+            judgments={"faithfulness": ae.Judgment(score=score)},
+            metrics={"faithfulness": score, "latency_ms": 10.0},
+            passed=passed,
+        )
+
+    def test_incluye_secciones(self):
+        cfg = self._cfg()
+        report = ae.render_report(
+            cfg,
+            [self._result(0.9, True), self._result(0.4, False)],
+            "deadbeef",
+            1.23,
+        )
+        assert "# Informe de evaluación" in report
+        assert "deadbeef" in report
+        assert "## 1. Resumen ejecutivo" in report
+        assert "## 4. Métricas agregadas" in report
+        assert "## 6. Análisis de fallos" in report
+        assert "```mermaid" in report
+
+    def test_veredicto_apto(self):
+        cfg = self._cfg()
+        report = ae.render_report(
+            cfg, [self._result(0.9, True)], "h", 1.0,
+        )
+        assert "✅ APTO" in report
+
+    def test_veredicto_revisar_por_fallos(self):
+        cfg = self._cfg()
+        report = ae.render_report(
+            cfg, [self._result(0.4, False)], "h", 1.0,
+        )
+        assert "⚠️ REVISAR" in report
+
+    def test_sin_mermaid_si_desactivado(self):
+        cfg = self._cfg()
+        cfg["output"]["include_mermaid"] = False
+        report = ae.render_report(
+            cfg, [self._result(0.9, True)], "h", 1.0,
+        )
+        assert "```mermaid" not in report
+
+
+# ===========================================================================
+# 12. Self-tests embebidos del monolito
+# ===========================================================================
+
+class TestSelfTests:
+    def test_selftests_pasan(self):
+        rc = ae.run_selftests()
+        assert rc == 0
+
+
+# ===========================================================================
+# 13. Demo end-to-end
+# ===========================================================================
+
+class TestDemo:
+    def test_demo_config(self):
+        cfg = ae.demo_config()
+        assert cfg["agent"]["type"] == "builtin"
+        assert cfg["dataset"]["path"] == "(demo)"
+
+    def test_demo_dataset(self):
+        items = ae.load_demo_dataset()
+        assert len(items) == 3
+        assert all(i.question for i in items)
