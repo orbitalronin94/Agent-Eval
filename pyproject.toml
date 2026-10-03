@@ -1,0 +1,39 @@
+[project]
+name = "agent-eval"
+version = "0.2.0"
+description = "Arnés de evaluación autocontenido para agentes y pipelines RAG."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "David Ferrandez Canalis" }
+]
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pyyaml>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --strict-markers"
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = [
+    "tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
