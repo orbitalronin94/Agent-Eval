@@ -1,12 +1,11 @@
 # `agent-eval.py`
 
 > **Arnés de evaluación autocontenido para agentes y pipelines RAG. Un archivo. Cero dependencias. Métricas reales. Persistencia y reproducibilidad.**
-
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![CI](https://img.shields.io/badge/CI-passing-brightgreen.svg)](#)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#)
-[![Version](https://img.shields.io/badge/version-0.2.2-orange.svg)](#)
+> [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+> [![CI](https://img.shields.io/badge/CI-passing-brightgreen.svg)](#)
+> [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+> [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#)
+> [![Version](https://img.shields.io/badge/version-0.2.2-orange.svg)](#)
 
 ---
 
@@ -39,7 +38,7 @@ python agent-eval.py --demo
 
 # Evaluar tu agente HTTP
 export OPENAI_API_KEY=sk-...
-python agent-eval.py --dataset data.jsonl --agent-url http://localhost:8000/ask
+python agent-eval.py --dataset data.jsonl --agent-url http://localhost:8000/chat
 ```
 
 También puedes utilizar el `Makefile` incluido:
@@ -58,7 +57,7 @@ make cov
 {"id": "q2", "question": "¿Qué métricas debe tener un RAG?", "ground_truth": "Precision, recall, faithfulness, relevance, latencia y coste."}
 ```
 
-Tu agente debe responder `{"answer": "...", "contexts": ["...", "..."]}`. Rutas anidadas soportadas (`data.answer`).
+Tu agente debe responder `{"answer": "...", "contexts": ["...", "..."]}`. Se pueden configurar rutas anidadas para extraer respuesta y contextos.
 
 ---
 
@@ -73,11 +72,11 @@ Tu agente debe responder `{"answer": "...", "contexts": ["...", "..."]}`. Rutas 
 | `latency_ms`        | Latencia end-to-end (P50, P95, mín, máx)                         |
 | `cost_usd`          | Coste estimado por tokens del agente + juez                      |
 
-Todas las métricas LLM se puntúan de 0.0 a 1.0 con `temperature=0` y salida JSON estricta.
+Las métricas LLM se puntúan de 0.0 a 1.0 con `temperature=0` y salida JSON estricta.
 
 El coste separa internamente tokens de entrada y salida del **agente** y del **juez**, aplicando precios independientes por millón de tokens.
 
-Cuando el proveedor devuelve usage real, se utilizan esos valores. Cuando no están disponibles, los tokens se estiman mediante `token_char_ratio`.
+Cuando el proveedor devuelve usage real, se utilizan esos valores. Cuando no están disponibles, los tokens se estiman para el cálculo de coste.
 
 ---
 
@@ -87,7 +86,7 @@ Cuando el proveedor devuelve usage real, se utilizan esos valores. Cuando no est
 * **Clasificación de errores** del agente: `timeout`, `http`, `parse`, `other`.
 * **Validación de esquema** en carga del dataset, con número de línea y campos encontrados.
 * **Transacciones SQLite** con rollback automático.
-* **Parsing tolerante** del JSON del juez (fences, texto alrededor, anidamiento).
+* **Parsing tolerante** del JSON del juez.
 * **Concurrencia controlada** mediante `asyncio.Semaphore`.
 * Los errores de un item se registran sin perder el resto de la evaluación.
 * Si falla un juez después de haber ejecutado el agente, se conserva la respuesta y el coste ya calculado.
@@ -109,9 +108,7 @@ Los self-tests no requieren dependencias adicionales.
 
 `make test` y `make cov` requieren `pytest` y `pytest-cov` instalados en el entorno de desarrollo.
 
-**CI:** GitHub Actions corre self-tests + demo + pytest con cobertura en Python 3.10, 3.11 y 3.12.
-
-Los self-tests también cubren el cálculo de costes por tokens, agregación de costes y persistencia histórica en SQLite.
+El proyecto también incluye una suite de tests automatizados en `tests/` y configuración de pytest/cobertura en `pyproject.toml`.
 
 ---
 
@@ -119,9 +116,9 @@ Los self-tests también cubren el cálculo de costes por tokens, agregación de 
 
 ```markdown
 # Informe de evaluación — `gpt-4o-mini`
-**Run:** `20261003-...`  
-**Hash del dataset:** `a3f9c1e8b742`  
-**Hash de configuración:** `71b82d94ce11`  
+**Run:** `20261003-...`
+**Hash del dataset:** `a3f9c1e8b742`
+**Hash de configuración:** `71b82d94ce11`
 **Tiempo:** 4.82 s
 
 ## Resumen ejecutivo
@@ -203,41 +200,55 @@ Todo sobrescribible vía flags CLI, JSON o YAML (con `pyyaml` opcional).
 
 ```yaml
 judge:
+  provider: openai-compatible
   base_url: https://api.openai.com/v1
   api_key_env: OPENAI_API_KEY
   model: gpt-4o-mini
+  timeout_s: 60
+  retries: 2
+  temperature: 0.0
+  max_tokens: 800
   prices:
     input_per_1m: 0.15
     output_per_1m: 0.60
 
 agent:
   type: http
-  url: http://localhost:8000/ask
-  response_answer_path: "data.answer"
-  response_contexts_path: "data.retrieved_contexts"
+  url: http://localhost:8000/chat
+  timeout_s: 60
   prices:
     input_per_1m: 0.50
     output_per_1m: 1.50
+  request_template:
+    question: "{question}"
+  answer_path: answer
+  contexts_path: contexts
+
+dataset:
+  path: dataset.jsonl
+  encoding: utf-8
 
 eval:
-  metrics: [faithfulness, answer_relevance, context_precision, latency_ms, cost_usd]
+  metrics: [faithfulness, answer_relevance, context_precision, context_recall]
   concurrency: 4
-  pass_threshold: 0.75
-  token_char_ratio: 3.5   # ajustado para español
+  pass_threshold: 0.7
 
 output:
-  report_path: reports/2026-10-03.md
+  sqlite: eval-results.db
+  report: eval-report.md
 ```
 
 Los precios se expresan por **1 millón de tokens** y se mantienen separados para agente y juez.
 
 Si los precios están a `0.0`, el sistema sigue funcionando pero el coste calculado será `0.0`.
 
-Cuando el proveedor del juez devuelve usage real, se utiliza directamente. En ausencia de usage, se aplica una estimación basada en `token_char_ratio`.
+Cuando el proveedor del juez devuelve usage real, se utiliza directamente. En ausencia de usage, se aplica una estimación basada en el texto disponible.
 
 Para el agente HTTP, el coste también puede ser estimado cuando no existe información de tokens proporcionada por el propio agente.
 
-**Jueces soportados:** cualquier endpoint compatible con OpenAI (`/v1/chat/completions`) — OpenAI, Groq, Together, Ollama, vLLM, llama.cpp.
+La configuración YAML es opcional y requiere `PyYAML`. JSON y la configuración por defecto no requieren dependencias externas.
+
+**Jueces soportados:** cualquier endpoint compatible con OpenAI (`/v1/chat/completions`), incluyendo proveedores y servidores compatibles como OpenAI, Groq, Together, Ollama, vLLM o llama.cpp.
 
 ---
 
@@ -246,26 +257,25 @@ Para el agente HTTP, el coste también puede ser estimado cuando no existe infor
 | Decisión                         | Alternativa                     | Por qué                                                                             |
 | -------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
 | Un solo archivo                  | Proyecto multi-módulo           | Fricción cero: copiar, ejecutar, auditar en 30s                                     |
-| Cero dependencias                | `requests`, `httpx`, `tiktoken` | Cada dep es un vector de fallo. `urllib` + `asyncio.to_thread` cubren el caso       |
+| Cero dependencias runtime        | `requests`, `httpx`, `tiktoken` | Cada dep es un vector de fallo. `urllib` + `asyncio` cubren el caso                 |
 | Asyncio + semáforo               | `ThreadPoolExecutor`            | El cuello es I/O, no CPU. Concurrencia controlada sin ahogar al proveedor           |
 | Retry solo en 5xx/red            | Reintentar todo                 | Reintentar un 401 es tirar dinero                                                   |
 | SQLite en disco                  | Postgres, DuckDB                | El informe es para humanos; SQLite para máquinas. Cero infraestructura              |
 | Histórico de ejecuciones         | Sobrescribir resultados         | Permite conservar y comparar evaluaciones anteriores                                |
 | Hash del dataset + configuración | —                               | Reproducibilidad: permite saber exactamente qué se evaluó                           |
 | LLM-juez agnóstico               | `ragas`, `deepeval`             | Control absoluto del prompt. Sin lock-in                                            |
-| `TOKEN_CHAR_RATIO = 3.5`         | 4.0 (estándar inglés)           | El español tiene palabras más largas; 4.0 subestima                                 |
 | Precios juez/agente separados    | Una tabla única                 | El juez suele ser barato; el agente puede ser caro. Mezclarlos oculta el coste real |
 | Usage real cuando existe         | Estimar siempre                 | Aprovecha los datos proporcionados por el proveedor                                 |
-| Coste estimado como fallback     | Tokenizer obligatorio           | Mantiene el proyecto stdlib-only                                                    |
+| Coste estimado como fallback     | Tokenizer obligatorio           | Mantiene el proyecto stdlib-first                                                   |
 | Self-tests embebidos             | Solo pytest                     | Verificable sin instalar nada en 1 segundo                                          |
 
 ---
 
 ## 🔬 Casos de uso
 
-1. **Bloquear merges regresivos en CI** — si `faithfulness` baja de 0.85, el PR falla.
-2. **A/B testing de modelos** — mismo dataset, dos jueces, dos informes.
-3. **Auditar agentes de terceros** — 50 preguntas representativas, informe en 5 minutos.
+1. **Bloquear merges regresivos en CI** — si una métrica baja del threshold configurado, la evaluación puede marcarse como no apta.
+2. **A/B testing de modelos** — mismo dataset, configuraciones diferentes y resultados comparables.
+3. **Auditar agentes de terceros** — preguntas representativas, métricas y un informe reproducible.
 4. **Debug local con Ollama** — sin gastar un céntimo en APIs.
 5. **Controlar costes de evaluación** — separar el coste del agente del coste del juez y detectar ejecuciones que se encarecen.
 
@@ -275,7 +285,7 @@ Para el agente HTTP, el coste también puede ser estimado cuando no existe infor
 
 > **El mejor código no es el más listo. Es el que se puede leer, auditar y ejecutar sin fricción.**
 
-Un archivo. Una cosa bien hecha. Sin ecosistema de dependencias. Eso es lo que un equipo contrata: no un framework, sino **criterio**.
+Un archivo. Una cosa bien hecha. Sin ecosistema de dependencias obligatorio. Eso es lo que un equipo contrata: no un framework, sino **criterio**.
 
 La evaluación debe ser además reproducible: mismo dataset, misma configuración, resultados almacenados y coste visible.
 
