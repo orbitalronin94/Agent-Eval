@@ -1,14 +1,47 @@
-__pycache__/
+# Python
+
+**pycache**/
 *.py[cod]
-*.egg-info/
+*$py.class
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / coverage
+
 .pytest_cache/
 .coverage
 .coverage.*
-coverage.xml
 htmlcov/
-build/
-dist/
-eval-report.md
-eval-results.db
-.venv/
-venv/
+.tox/
+.nox/
+
+# SQLite / local persistence
+
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment / secrets
+
+.env
+.env.*
+!.env.example
+
+# Reports generated locally
+
+reports/
+
+# IDEs / editors
+
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumbs.db
