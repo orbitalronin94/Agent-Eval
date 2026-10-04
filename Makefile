@@ -1,25 +1,20 @@
-.PHONY: help selftest demo test cov clean
+.PHONY: selftest demo test cov clean
 
-help:
-	@echo "Targets disponibles:"
-	@echo "  make selftest  - Self-tests embebidos del monolito"
-	@echo "  make demo      - Ejecuta la demo end-to-end"
-	@echo "  make test      - Tests con pytest"
-	@echo "  make cov       - Tests con cobertura"
-	@echo "  make clean     - Borra artefactos generados"
+PYTHON ?= python
 
 selftest:
-	python agent-eval.py --selftest
+$(PYTHON) agent-eval.py --selftest
 
 demo:
-	python agent-eval.py --demo
+$(PYTHON) agent-eval.py --demo
 
 test:
-	pytest
+pytest -q
 
 cov:
-	pytest --cov=. --cov-report=term-missing
+pytest --cov=. --cov-report=term-missing
 
 clean:
-	rm -f eval-report.md eval-results.db coverage.xml .coverage
-	rm -rf .pytest_cache htmlcov __pycache__ tests/__pycache__ .coverage.*
+rm -rf pycache .pytest_cache .coverage htmlcov
+find . -type f −name"∗.pyc"−o−name"∗.pyo"-name "*.pyc" -o -name "*.pyo" -delete
+
