@@ -12,15 +12,17 @@
 
 ## 📌 El problema
 
-La mayoría de los portfolios de IA son cajas negras: notebooks, demos, "funciona en mi máquina". Nadie sabe si el agente alucina, si el RAG recupera basura, cuánto cuesta cada consulta, cuántos tokens consume o si una nueva ejecución ha empeorado respecto a una anterior.
+La mayoría de los portfolios de IA son cajas negras: notebooks, demos, "funciona en mi máquina". Nadie sabe si el agente alucina, si el RAG recupera basura, cuánto cuesta cada consulta o cuántos timeouts silenciosos traga el sistema.
 
 Un pipeline de IA sin métricas cuantificadas es una prueba de concepto, no un producto.
 
 ## 💡 La solución
 
-Un **único archivo Python** que carga un dataset JSONL, ejecuta tu agente, lo evalúa con un LLM-juez, calcula métricas, persiste cada ejecución en SQLite y genera un informe Markdown con tablas, percentiles, hashes de reproducibilidad y diagramas Mermaid.
+Un **único archivo Python** que carga un dataset JSONL, ejecuta tu agente, lo evalúa con un LLM-juez, calcula métricas, persiste en SQLite y genera un informe Markdown con tablas, percentiles y diagramas Mermaid.
 
-Además, calcula el coste separando **agente y juez**, utilizando usage real cuando está disponible y estimaciones de tokens cuando el proveedor no lo expone.
+Además, cada ejecución queda identificada mediante un `run_id`, hash del dataset y hash de configuración, permitiendo conservar y comparar evaluaciones históricas.
+
+El cálculo de coste separa el consumo del **agente** y del **juez**, utilizando usage real cuando está disponible y estimaciones de tokens cuando el proveedor no lo expone.
 
 **Sin frameworks. Sin Docker. Sin dependencias obligatorias.** Solo Python 3.10+ y la librería estándar.
 
@@ -38,6 +40,15 @@ python agent-eval.py --demo
 # Evaluar tu agente HTTP
 export OPENAI_API_KEY=sk-...
 python agent-eval.py --dataset data.jsonl --agent-url http://localhost:8000/ask
+```
+
+También puedes utilizar el `Makefile` incluido:
+
+```bash
+make selftest
+make demo
+make test
+make cov
 ```
 
 ### Dataset (`data.jsonl`)
@@ -66,7 +77,7 @@ Todas las métricas LLM se puntúan de 0.0 a 1.0 con `temperature=0` y salida JS
 
 El coste separa internamente tokens de entrada y salida del **agente** y del **juez**, aplicando precios independientes por millón de tokens.
 
-Cuando el proveedor no devuelve usage real, los tokens se estiman mediante `token_char_ratio`.
+Cuando el proveedor devuelve usage real, se utilizan esos valores. Cuando no están disponibles, los tokens se estiman mediante `token_char_ratio`.
 
 ---
 
@@ -85,12 +96,18 @@ Cuando el proveedor no devuelve usage real, los tokens se estiman mediante `toke
 
 ## 🧪 Verificación
 
+El repositorio incluye un `Makefile` para ejecutar las comprobaciones habituales:
+
 ```bash
 make selftest   # self-tests embebidos, <1s, 0 deps
 make demo       # pipeline completo end-to-end
-make test       # ~90 tests con pytest
-make cov        # cobertura
+make test       # tests con pytest
+make cov        # tests + cobertura
 ```
+
+Los self-tests no requieren dependencias adicionales.
+
+`make test` y `make cov` requieren `pytest` y `pytest-cov` instalados en el entorno de desarrollo.
 
 **CI:** GitHub Actions corre self-tests + demo + pytest con cobertura en Python 3.10, 3.11 y 3.12.
 
@@ -122,6 +139,61 @@ Los self-tests también cubren el cálculo de costes por tokens, agregación de 
 Cada ejecución queda asociada a un `run_id`, un hash del dataset y un hash de configuración para poder identificar exactamente qué se evaluó.
 
 Los fallos se analizan individualmente con razonamiento del juez y tipo de error.
+
+---
+
+## 🗄️ Persistencia e histórico
+
+Cada ejecución se almacena en SQLite con un `run_id` único.
+
+Se conservan:
+
+* configuración de la ejecución;
+* hash del dataset;
+* hash de la configuración;
+* timestamp;
+* número de items;
+* respuestas del agente;
+* contextos;
+* latencia;
+* tokens de entrada y salida;
+* coste;
+* métricas del juez;
+* razonamiento del juez;
+* errores y tipo de error.
+
+Las ejecuciones anteriores **no se sobrescriben**.
+
+Esto permite comparar diferentes ejecuciones del mismo dataset y detectar cambios en resultados, latencia o coste.
+
+SQLite forma parte de la librería estándar de Python, por lo que no requiere infraestructura externa.
+
+---
+
+## 🔁 Reproducibilidad
+
+Cada ejecución utiliza identificadores que permiten reconstruir qué se evaluó:
+
+```text
+Run ID:       20261003-...
+Dataset hash: a3f9c1e8b742
+Config hash:  71b82d94ce11
+```
+
+El hash del dataset permite detectar cambios en las preguntas, respuestas esperadas o datos de evaluación.
+
+El hash de configuración permite detectar cambios en:
+
+* modelo;
+* endpoint;
+* prompts;
+* métricas;
+* threshold;
+* concurrencia;
+* precios;
+* configuración del agente.
+
+Esto evita comparar resultados como si fueran equivalentes cuando proceden de configuraciones diferentes.
 
 ---
 
@@ -161,7 +233,9 @@ Los precios se expresan por **1 millón de tokens** y se mantienen separados par
 
 Si los precios están a `0.0`, el sistema sigue funcionando pero el coste calculado será `0.0`.
 
-El coste del agente puede ser estimado cuando el agente no proporciona usage real. El coste del juez utiliza usage real cuando el proveedor lo devuelve y, en caso contrario, aplica la misma estimación basada en `token_char_ratio`.
+Cuando el proveedor del juez devuelve usage real, se utiliza directamente. En ausencia de usage, se aplica una estimación basada en `token_char_ratio`.
+
+Para el agente HTTP, el coste también puede ser estimado cuando no existe información de tokens proporcionada por el propio agente.
 
 **Jueces soportados:** cualquier endpoint compatible con OpenAI (`/v1/chat/completions`) — OpenAI, Groq, Together, Ollama, vLLM, llama.cpp.
 
@@ -176,7 +250,7 @@ El coste del agente puede ser estimado cuando el agente no proporciona usage rea
 | Asyncio + semáforo               | `ThreadPoolExecutor`            | El cuello es I/O, no CPU. Concurrencia controlada sin ahogar al proveedor           |
 | Retry solo en 5xx/red            | Reintentar todo                 | Reintentar un 401 es tirar dinero                                                   |
 | SQLite en disco                  | Postgres, DuckDB                | El informe es para humanos; SQLite para máquinas. Cero infraestructura              |
-| Histórico de ejecuciones         | Sobrescribir resultados         | Permite comparar ejecuciones sin perder evaluaciones anteriores                     |
+| Histórico de ejecuciones         | Sobrescribir resultados         | Permite conservar y comparar evaluaciones anteriores                                |
 | Hash del dataset + configuración | —                               | Reproducibilidad: permite saber exactamente qué se evaluó                           |
 | LLM-juez agnóstico               | `ragas`, `deepeval`             | Control absoluto del prompt. Sin lock-in                                            |
 | `TOKEN_CHAR_RATIO = 3.5`         | 4.0 (estándar inglés)           | El español tiene palabras más largas; 4.0 subestima                                 |
