@@ -1,9 +1,8 @@
 """
-Tests para agent-eval.py usando pytest.
+Tests para Agent-Eval 0.2.2.
 
-El monolito se carga dinámicamente porque su nombre contiene un guión
-y no es importable directamente con `import`. Todos los tests son
-deterministas, sin red y sin API keys.
+El monolito se carga dinámicamente porque su nombre contiene un guión.
+Todos los tests son deterministas, sin red real y sin API keys.
 """
 
 from __future__ import annotations
@@ -25,66 +24,39 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _load_monolith():
-    here = Path(__file__).resolve().parent.parent
-    for name in ("agent-eval.py", "agent_eval.py"):
-        p = here / name
-        if p.exists():
-            spec = importlib.util.spec_from_file_location("agent_eval", p)
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules["agent_eval"] = mod
-            spec.loader.exec_module(mod)
-            return mod
-    raise RuntimeError("No se encontró el monolito agent-eval.py")
+    root = Path(__file__).resolve().parent.parent
+    path = root / "agent-eval.py"
+
+    if not path.exists():
+        raise RuntimeError(f"No se encontró el monolito: {path}")
+
+    spec = importlib.util.spec_from_file_location("agent_eval", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "No se pudo crear el import spec para agent-eval.py"
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["agent_eval"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 ae = _load_monolith()
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def corpus():
-    return [
-        "Python es un lenguaje interpretado de alto nivel.",
-        "Rust es un lenguaje compilado con ownership.",
-        "SQLite es una base de datos embebida sin servidor.",
-    ]
+class FakeHTTPResponse:
+    """Respuesta mínima compatible con urllib.request.urlopen."""
 
-
-@pytest.fixture
-def builtin_agent(corpus):
-    return ae.BuiltinAgent(corpus, k=2)
-
-
-@pytest.fixture
-def sample_item():
-    return ae.EvalItem(
-        id="q1",
-        question="¿Qué es Python?",
-        ground_truth="Un lenguaje interpretado.",
-    )
-
-
-@pytest.fixture
-def sample_response():
-    return ae.AgentResponse(
-        answer="Python es un lenguaje interpretado.",
-        contexts=["Python es un lenguaje interpretado de alto nivel."],
-        latency_ms=42.0,
-    )
-
-
-class FakeResponse:
-    """Sustituto de la respuesta de urllib.request.urlopen."""
-
-    def __init__(self, body: str, status: int = 200):
-        self._body = body.encode("utf-8")
-        self.status = status
+    def __init__(self, body: str):
+        self.body = body.encode("utf-8")
 
     def read(self):
-        return self._body
+        return self.body
 
     def __enter__(self):
         return self
@@ -93,592 +65,1910 @@ class FakeResponse:
         return False
 
 
+class FakeJudgeClient:
+    """Cliente LLM determinista para tests del Judge."""
+
+    def __init__(
+        self,
+        score: float = 0.9,
+        reasoning: str = "ok",
+        usage: tuple[int, int] = (10, 5),
+    ):
+        self.score = score
+        self.reasoning = reasoning
+        self.usage = usage
+
+    async def complete(self, messages):
+        payload = json.dumps(
+            {
+                "score": self.score,
+                "reasoning": self.reasoning,
+            }
+        )
+        return payload, {
+            "prompt_tokens": self.usage[0],
+            "completion_tokens": self.usage[1],
+        }
+
+
+@pytest.fixture
+def sample_item():
+    return ae.EvalItem(
+        id="q1",
+        question="What is Python?",
+        ground_truth="A programming language.",
+        contexts=[
+            "Python is a high-level programming language."
+        ],
+        metadata={"source": "test"},
+    )
+
+
+@pytest.fixture
+def sample_response():
+    return ae.AgentResponse(
+        answer="Python is a programming language.",
+        contexts=[
+            "Python is a high-level programming language."
+        ],
+        latency_ms=42.0,
+        tokens_in=10,
+        tokens_out=8,
+    )
+
+
+@pytest.fixture
+def base_config():
+    return json.loads(json.dumps(ae.CONFIG))
+
+
 # ===========================================================================
-# 1. Funciones puras
+# 1. Dataclasses
+# ===========================================================================
+
+class TestDataclasses:
+    def test_eval_item_defaults(self):
+        item = ae.EvalItem(
+            id="1",
+            question="q",
+        )
+
+        assert item.ground_truth is None
+        assert item.contexts == []
+        assert item.metadata == {}
+
+    def test_agent_response_defaults(self):
+        response = ae.AgentResponse(answer="a")
+
+        assert response.contexts == []
+        assert response.latency_ms == 0.0
+        assert response.tokens_in == 0
+        assert response.tokens_out == 0
+        assert response.raw is None
+
+    def test_judgment_defaults(self):
+        judgment = ae.Judgment(
+            metric="faithfulness",
+            score=0.8,
+        )
+
+        assert judgment.reasoning == ""
+        assert judgment.raw is None
+        assert judgment.tokens_in == 0
+        assert judgment.tokens_out == 0
+
+    def test_item_result_defaults(self):
+        item = ae.EvalItem(
+            id="1",
+            question="q",
+        )
+        result = ae.ItemResult(
+            item=item,
+            response=None,
+        )
+
+        assert result.judgments == []
+        assert result.passed is False
+        assert result.error is None
+        assert result.error_type is None
+        assert result.cost_usd == 0.0
+
+
+# ===========================================================================
+# 2. Funciones puras
 # ===========================================================================
 
 class TestEstimateTokens:
-    def test_vacio(self):
+    def test_empty(self):
         assert ae.estimate_tokens("") == 0
 
-    def test_texto_corto(self):
-        assert ae.estimate_tokens("hola") > 0
+    def test_non_empty(self):
+        assert ae.estimate_tokens("hello") >= 1
 
-    def test_ratio_afecta_resultado(self):
-        a = ae.estimate_tokens("a" * 100, ratio=4.0)
-        b = ae.estimate_tokens("a" * 100, ratio=2.0)
-        assert a < b
+    def test_monotonic(self):
+        assert (
+            ae.estimate_tokens("a" * 100)
+            <= ae.estimate_tokens("a" * 200)
+        )
 
-    def test_monotonia(self):
-        assert ae.estimate_tokens("a" * 100) <= ae.estimate_tokens("a" * 200)
+    def test_long_text(self):
+        assert ae.estimate_tokens("a" * 1000) == 250
 
 
-class TestSha256Short:
-    def test_determinista(self):
-        assert ae.sha256_short("hola") == ae.sha256_short("hola")
+class TestPriceAndCost:
+    def test_price_for(self):
+        assert ae.price_for(1_000_000, 2.0) == pytest.approx(2.0)
 
-    def test_distinto_input(self):
-        assert ae.sha256_short("hola") != ae.sha256_short("hola ")
+    def test_price_for_zero(self):
+        assert ae.price_for(0, 10.0) == 0.0
 
-    def test_longitud_por_defecto(self):
-        assert len(ae.sha256_short("hola")) == 12
+    def test_token_cost(self):
+        value = ae.token_cost(
+            1_000_000,
+            500_000,
+            1.0,
+            2.0,
+        )
 
-    def test_longitud_personalizada(self):
-        assert len(ae.sha256_short("hola", n=8)) == 8
+        assert value == pytest.approx(2.0)
+
+    def test_token_cost_zero(self):
+        assert ae.token_cost(0, 0, 1.0, 2.0) == 0.0
+
+
+class TestHashes:
+    def test_sha256_short_default_length(self):
+        assert len(ae.sha256_short("hello")) == 12
+
+    def test_sha256_short_custom_length(self):
+        assert len(ae.sha256_short("hello", 8)) == 8
+
+    def test_sha256_short_deterministic(self):
+        assert ae.sha256_short("hello") == ae.sha256_short("hello")
+
+    def test_sha256_short_changes_with_input(self):
+        assert ae.sha256_short("hello") != ae.sha256_short("hello!")
+
+    def test_canonical_hash_order_independent(self):
+        a = ae.canonical_hash({"b": 2, "a": 1})
+        b = ae.canonical_hash({"a": 1, "b": 2})
+
+        assert a == b
+
+    def test_canonical_hash_custom_length(self):
+        value = ae.canonical_hash(
+            {"a": 1},
+            length=8,
+        )
+
+        assert len(value) == 8
 
 
 class TestPercentile:
-    def test_vacio(self):
-        assert ae.percentile([], 0.5) == 0.0
+    def test_empty(self):
+        assert ae.percentile([], 50) == 0.0
+
+    def test_single_value(self):
+        assert ae.percentile([42.0], 50) == 42.0
+
+    def test_zero(self):
+        assert ae.percentile([1, 2, 3], 0) == 1
+
+    def test_hundred(self):
+        assert ae.percentile([1, 2, 3], 100) == 3
+
+    def test_interpolation(self):
+        assert ae.percentile(
+            [1, 2, 3, 4, 5],
+            25,
+        ) == pytest.approx(2.0)
 
     def test_p50(self):
-        assert abs(ae.percentile([1, 2, 3, 4, 5], 0.5) - 3.0) < 1e-9
-
-    def test_p0(self):
-        assert ae.percentile([1, 2, 3, 4, 5], 0.0) == 1.0
-
-    def test_p100(self):
-        assert ae.percentile([1, 2, 3, 4, 5], 1.0) == 5.0
-
-    def test_un_solo_valor(self):
-        assert ae.percentile([42.0], 0.5) == 42.0
+        assert ae.percentile(
+            [1, 2, 3, 4, 5],
+            50,
+        ) == pytest.approx(3.0)
 
 
 class TestSafeMean:
-    def test_vacio(self):
+    def test_empty(self):
         assert ae.safe_mean([]) == 0.0
 
-    def test_media_simple(self):
-        assert abs(ae.safe_mean([1, 2, 3, 4]) - 2.5) < 1e-9
-
-    def test_ignora_none(self):
-        assert abs(ae.safe_mean([1, None, 3]) - 2.0) < 1e-9
+    def test_mean(self):
+        assert ae.safe_mean([1, 2, 3, 4]) == pytest.approx(2.5)
 
 
-class TestPriceFor:
-    def test_modelo_exacto(self):
-        assert ae.price_for("gpt-4o-mini")["in"] == 0.00015
+class TestDeepMerge:
+    def test_flat_override(self):
+        result = ae.deep_merge(
+            {"a": 1, "b": 2},
+            {"a": 3},
+        )
 
-    def test_prefijo(self):
-        assert ae.price_for("gpt-4o-mini-2024")["in"] == 0.00015
-
-    def test_desconocido(self):
-        assert ae.price_for("modelo-inexistente")["in"] == 0.0
-
-
-class TestFmt:
-    def test_tres_decimales(self):
-        assert ae._fmt(1.23456) == "1.235"
-
-    def test_un_decimal(self):
-        assert ae._fmt(1.23456, 1) == "1.2"
-
-
-# ===========================================================================
-# 2. Utilidades recursivas
-# ===========================================================================
-
-class TestDeepGet:
-    def test_un_nivel(self):
-        assert ae._deep_get({"a": 1}, "a") == 1
-
-    def test_dos_niveles(self):
-        assert ae._deep_get({"a": {"b": 2}}, "a.b") == 2
-
-    def test_falta(self):
-        assert ae._deep_get({"a": 1}, "a.b") is None
-
-    def test_valor_cero(self):
-        assert ae._deep_get({"a": 0}, "a") == 0
-
-
-class TestDeepFormat:
-    def test_string_plano(self):
-        assert ae._deep_format("hola {x}", {"x": "mundo"}) == "hola mundo"
-
-    def test_sin_placeholders(self):
-        assert ae._deep_format("hola", {"x": "mundo"}) == "hola"
-
-    def test_dict_anidado(self):
-        assert ae._deep_format({"q": "{x}"}, {"x": "y"}) == {"q": "y"}
-
-    def test_lista(self):
-        assert ae._deep_format([{"q": "{x}"}], {"x": "y"}) == [{"q": "y"}]
-
-
-class TestMergeConfig:
-    def test_override_plano(self):
-        assert ae.merge_config({"a": 1}, {"a": 2}) == {"a": 2}
-
-    def test_merge_profundo(self):
-        assert ae.merge_config({"a": {"b": 1}}, {"a": {"c": 2}}) == {
-            "a": {"b": 1, "c": 2}
+        assert result == {
+            "a": 3,
+            "b": 2,
         }
 
-    def test_no_muta_base(self):
-        base = {"a": 1}
-        ae.merge_config(base, {"a": 2})
-        assert base["a"] == 1
+    def test_nested_merge(self):
+        result = ae.deep_merge(
+            {"a": {"b": 1, "c": 2}},
+            {"a": {"b": 3}},
+        )
+
+        assert result == {
+            "a": {
+                "b": 3,
+                "c": 2,
+            }
+        }
+
+    def test_does_not_mutate_base(self):
+        base = {
+            "a": {
+                "b": 1,
+            }
+        }
+
+        ae.deep_merge(
+            base,
+            {
+                "a": {
+                    "b": 2,
+                }
+            },
+        )
+
+        assert base["a"]["b"] == 1
+
+    def test_override_dict_with_scalar(self):
+        result = ae.deep_merge(
+            {"a": {"b": 1}},
+            {"a": 5},
+        )
+
+        assert result["a"] == 5
 
 
 # ===========================================================================
-# 3. Parsing de JSON del juez
+# 3. Utilidades recursivas
+# ===========================================================================
+
+class TestDeepFormat:
+    def test_string(self):
+        assert ae._deep_format(
+            "hello {name}",
+            {"name": "world"},
+        ) == "hello world"
+
+    def test_missing_key_is_left_unchanged(self):
+        value = ae._deep_format(
+            "hello {missing}",
+            {},
+        )
+
+        assert value == "hello {missing}"
+
+    def test_invalid_format_is_left_unchanged(self):
+        value = ae._deep_format(
+            "{",
+            {},
+        )
+
+        assert value == "{"
+
+    def test_nested_dict(self):
+        value = ae._deep_format(
+            {
+                "question": "{question}",
+                "nested": {
+                    "id": "{id}",
+                },
+            },
+            {
+                "question": "hello",
+                "id": "123",
+            },
+        )
+
+        assert value == {
+            "question": "hello",
+            "nested": {
+                "id": "123",
+            },
+        }
+
+    def test_nested_list(self):
+        value = ae._deep_format(
+            [
+                "{a}",
+                {
+                    "b": "{b}",
+                },
+            ],
+            {
+                "a": "A",
+                "b": "B",
+            },
+        )
+
+        assert value == [
+            "A",
+            {
+                "b": "B",
+            },
+        ]
+
+    def test_non_string_value(self):
+        assert ae._deep_format(123, {}) == 123
+
+
+class TestGetPath:
+    def test_none_path_returns_value(self):
+        value = {"a": 1}
+
+        assert ae._get_path(value, None) == value
+
+    def test_empty_path_returns_value(self):
+        value = {"a": 1}
+
+        assert ae._get_path(value, "") == value
+
+    def test_dict_path(self):
+        value = {
+            "a": {
+                "b": 2,
+            }
+        }
+
+        assert ae._get_path(value, "a.b") == 2
+
+    def test_list_path(self):
+        value = {
+            "items": [
+                {"name": "first"},
+                {"name": "second"},
+            ]
+        }
+
+        assert ae._get_path(
+            value,
+            "items.1.name",
+        ) == "second"
+
+    def test_out_of_range(self):
+        assert ae._get_path(
+            {"items": []},
+            "items.0",
+        ) is None
+
+    def test_invalid_path(self):
+        assert ae._get_path(
+            {"a": 1},
+            "a.b",
+        ) is None
+
+
+# ===========================================================================
+# 4. JSON parsing
 # ===========================================================================
 
 class TestExtractJson:
-    def test_limpio(self):
-        assert ae._extract_json('{"score": 0.8}') == {"score": 0.8}
+    def test_clean_object(self):
+        assert ae._extract_json(
+            '{"score": 0.8}'
+        ) == {"score": 0.8}
 
-    def test_con_fence(self):
-        assert ae._extract_json('```json\n{"score": 0.5}\n```') == {"score": 0.5}
+    def test_clean_array(self):
+        assert ae._extract_json(
+            "[1, 2, 3]"
+        ) == [1, 2, 3]
 
-    def test_con_fence_sin_etiqueta(self):
-        assert ae._extract_json('```\n{"score": 0.5}\n```') == {"score": 0.5}
+    def test_prefixed_object(self):
+        assert ae._extract_json(
+            'Here is the result: {"score": 0.8}'
+        ) == {"score": 0.8}
 
-    def test_con_basura(self):
-        assert ae._extract_json('bla {"score": 0.3} bla') == {"score": 0.3}
+    def test_prefixed_array(self):
+        assert ae._extract_json(
+            "Result: [1, 2, 3]"
+        ) == [1, 2, 3]
 
-    def test_invalido(self):
-        assert ae._extract_json("no json aquí") is None
+    def test_multiple_fragments_returns_first_valid(self):
+        value = ae._extract_json(
+            'text {"a": 1} {"b": 2}'
+        )
 
-    def test_anidado(self):
-        assert ae._extract_json('{"a": {"b": 1}}') == {"a": {"b": 1}}
+        assert value == {"a": 1}
 
-    def test_array_no_dict(self):
-        assert ae._extract_json("[1, 2, 3]") is None
+    def test_invalid_json(self):
+        with pytest.raises(ValueError, match="No valid JSON"):
+            ae._extract_json("not json")
+
+    def test_nested_json(self):
+        assert ae._extract_json(
+            '{"a": {"b": 1}}'
+        ) == {
+            "a": {
+                "b": 1,
+            }
+        }
 
 
 # ===========================================================================
-# 4. BuiltinAgent
+# 5. Configuración
+# ===========================================================================
+
+class TestConfig:
+    def test_load_json_config(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"agent": {"type": "builtin"}}),
+            encoding="utf-8",
+        )
+
+        value = ae.load_config_file(path)
+
+        assert value == {
+            "agent": {
+                "type": "builtin",
+            }
+        }
+
+    def test_load_yaml_config(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "agent:\n"
+            "  type: builtin\n",
+            encoding="utf-8",
+        )
+
+        try:
+            value = ae.load_config_file(path)
+        except RuntimeError as exc:
+            pytest.skip(str(exc))
+
+        assert value["agent"]["type"] == "builtin"
+
+    def test_missing_config(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            ae.load_config_file(tmp_path / "missing.json")
+
+    def test_invalid_json_config(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("not json", encoding="utf-8")
+
+        with pytest.raises(json.JSONDecodeError):
+            ae.load_config_file(path)
+
+    def test_json_config_must_be_object(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("[]", encoding="utf-8")
+
+        with pytest.raises(
+            ValueError,
+            match="must contain an object",
+        ):
+            ae.load_config_file(path)
+
+    def test_unsupported_config_extension(self, tmp_path):
+        path = tmp_path / "config.txt"
+        path.write_text("x", encoding="utf-8")
+
+        with pytest.raises(
+            ValueError,
+            match="Unsupported config format",
+        ):
+            ae.load_config_file(path)
+
+
+class TestResolveApiKey:
+    def test_without_environment_setting(self):
+        assert ae.resolve_api_key({}) is None
+
+    def test_environment_key(self, monkeypatch):
+        monkeypatch.setenv(
+            "TEST_AGENT_EVAL_KEY",
+            "secret",
+        )
+
+        assert ae.resolve_api_key(
+            {
+                "api_key_env": "TEST_AGENT_EVAL_KEY"
+            }
+        ) == "secret"
+
+    def test_missing_environment_key(self, monkeypatch):
+        monkeypatch.delenv(
+            "TEST_AGENT_EVAL_KEY",
+            raising=False,
+        )
+
+        assert ae.resolve_api_key(
+            {
+                "api_key_env": "TEST_AGENT_EVAL_KEY"
+            }
+        ) is None
+
+
+# ===========================================================================
+# 6. Dataset
+# ===========================================================================
+
+class TestDataset:
+    def test_load_valid_dataset(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text(
+            '{"id":"a","question":"q1"}\n'
+            '{"id":"b","question":"q2",'
+            '"ground_truth":"gt",'
+            '"contexts":["c1"],'
+            '"metadata":{"x":1}}\n',
+            encoding="utf-8",
+        )
+
+        items = ae.load_dataset(path)
+
+        assert len(items) == 2
+        assert items[0].id == "a"
+        assert items[0].ground_truth is None
+        assert items[1].ground_truth == "gt"
+        assert items[1].contexts == ["c1"]
+        assert items[1].metadata == {"x": 1}
+
+    def test_blank_lines_are_ignored(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text(
+            "\n"
+            '{"question":"q"}\n'
+            "\n",
+            encoding="utf-8",
+        )
+
+        items = ae.load_dataset(path)
+
+        assert len(items) == 1
+        assert items[0].id == "2"
+
+    def test_default_id_uses_line_number(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text(
+            '{"question":"q"}\n',
+            encoding="utf-8",
+        )
+
+        items = ae.load_dataset(path)
+
+        assert items[0].id == "1"
+
+    def test_missing_file(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            ae.load_dataset(tmp_path / "missing.jsonl")
+
+    def test_invalid_json(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text("not json\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Invalid JSON"):
+            ae.load_dataset(path)
+
+    def test_non_object_row(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text("[]\n", encoding="utf-8")
+
+        with pytest.raises(
+            ValueError,
+            match="must be a JSON object",
+        ):
+            ae.load_dataset(path)
+
+    def test_empty_question(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text(
+            '{"question":"   "}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="empty question",
+        ):
+            ae.load_dataset(path)
+
+    def test_contexts_must_be_list(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text(
+            '{"question":"q","contexts":"not-list"}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="contexts must be a list",
+        ):
+            ae.load_dataset(path)
+
+    def test_empty_dataset(self, tmp_path):
+        path = tmp_path / "dataset.jsonl"
+        path.write_text("\n", encoding="utf-8")
+
+        with pytest.raises(
+            ValueError,
+            match="Dataset is empty",
+        ):
+            ae.load_dataset(path)
+
+    def test_dataset_hash_is_stable(self):
+        items = [
+            ae.EvalItem(
+                id="1",
+                question="q",
+            )
+        ]
+
+        assert ae.dataset_hash(items) == ae.dataset_hash(items)
+
+
+# ===========================================================================
+# 7. BuiltinAgent
 # ===========================================================================
 
 class TestBuiltinAgent:
-    def test_devuelve_respuesta(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("Python lenguaje"))
-        assert resp.answer
+    def test_selects_relevant_context(self):
+        agent = ae.BuiltinAgent()
 
-    def test_devuelve_contextos(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("Python lenguaje"))
-        assert len(resp.contexts) > 0
+        item = ae.EvalItem(
+            id="1",
+            question="What is Python?",
+            contexts=[
+                "Rust uses ownership.",
+                "Python is a programming language.",
+            ],
+        )
 
-    def test_sin_error(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("Python lenguaje"))
-        assert resp.error is None
+        response = asyncio.run(agent.run(item))
 
-    def test_contexto_correcto(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("Python lenguaje"))
-        assert "Python" in resp.contexts[0]
+        assert (
+            response.answer
+            == "Python is a programming language."
+        )
+        assert response.contexts == item.contexts
+        assert response.latency_ms >= 0.0
+        assert response.tokens_in > 0
+        assert response.tokens_out > 0
 
-    def test_query_sin_match(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("xyz qwerty"))
-        assert resp.answer
+    def test_falls_back_to_first_context(self):
+        agent = ae.BuiltinAgent()
 
-    def test_latencia_no_negativa(self, builtin_agent):
-        resp = asyncio.run(builtin_agent.ask("Python"))
-        assert resp.latency_ms >= 0.0
+        item = ae.EvalItem(
+            id="1",
+            question="xyz qwerty",
+            contexts=[
+                "first context",
+                "second context",
+            ],
+        )
+
+        response = asyncio.run(agent.run(item))
+
+        assert response.answer == "first context"
+
+    def test_without_contexts(self):
+        agent = ae.BuiltinAgent()
+
+        item = ae.EvalItem(
+            id="1",
+            question="xyz qwerty",
+            contexts=[],
+        )
+
+        response = asyncio.run(agent.run(item))
+
+        assert response.answer == "No relevant context found."
+        assert response.contexts == []
 
 
 # ===========================================================================
-# 5. HTTPAgent con urlopen mockeado
+# 8. HTTPAgent
 # ===========================================================================
 
 class TestHTTPAgent:
     def _cfg(self):
         return {
             "type": "http",
-            "url": "http://fake/ask",
-            "method": "POST",
-            "headers": {"Content-Type": "application/json"},
-            "request_template": {"question": "{question}"},
-            "response_answer_path": "answer",
-            "response_contexts_path": "contexts",
-            "timeout": 5.0,
+            "url": "http://fake.test/chat",
+            "timeout_s": 5,
+            "headers": {
+                "X-Test": "1",
+            },
+            "request_template": {
+                "question": "{question}",
+                "id": "{id}",
+                "contexts": "{contexts}",
+            },
+            "answer_path": "answer",
+            "contexts_path": "contexts",
+            "prices": {
+                "input_per_1m": 1.0,
+                "output_per_1m": 2.0,
+            },
         }
 
-    def test_respuesta_valida(self):
-        body = json.dumps({"answer": "42", "contexts": ["c1", "c2"]})
-        agent = ae.HTTPAgent(self._cfg())
-        with patch("urllib.request.urlopen",
-                   return_value=FakeResponse(body)):
-            resp = asyncio.run(agent.ask("¿?"))
-        assert resp.answer == "42"
-        assert resp.contexts == ["c1", "c2"]
-        assert resp.error is None
+    def test_success(self, sample_item):
+        body = json.dumps(
+            {
+                "answer": "Python",
+                "contexts": ["context"],
+            }
+        )
 
-    def test_contexto_string_se_convierte_a_lista(self):
-        body = json.dumps({"answer": "a", "contexts": "solo uno"})
         agent = ae.HTTPAgent(self._cfg())
-        with patch("urllib.request.urlopen",
-                   return_value=FakeResponse(body)):
-            resp = asyncio.run(agent.ask("¿?"))
-        assert resp.contexts == ["solo uno"]
 
-    def test_json_invalido(self):
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            response = asyncio.run(agent.run(sample_item))
+
+        assert response.answer == "Python"
+        assert response.contexts == ["context"]
+        assert response.latency_ms >= 0.0
+        assert response.tokens_in > 0
+        assert response.tokens_out > 0
+        assert response.raw == {
+            "answer": "Python",
+            "contexts": ["context"],
+        }
+
+    def test_request_template_is_formatted(self, sample_item):
+        body = json.dumps(
+            {
+                "answer": "ok",
+                "contexts": [],
+            }
+        )
         agent = ae.HTTPAgent(self._cfg())
-        with patch("urllib.request.urlopen",
-                   return_value=FakeResponse("no es json")):
-            resp = asyncio.run(agent.ask("¿?"))
-        assert resp.error is not None
-        assert resp.error_type == "parse"
 
-    def test_error_de_red(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return FakeHTTPResponse(body)
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=fake_urlopen,
+        ):
+            asyncio.run(agent.run(sample_item))
+
+        payload = json.loads(
+            captured["request"].data.decode("utf-8")
+        )
+
+        assert payload["question"] == sample_item.question
+        assert payload["id"] == sample_item.id
+        assert captured["timeout"] == 5.0
+
+    def test_missing_answer(self, sample_item):
+        body = json.dumps(
+            {
+                "contexts": [],
+            }
+        )
+
         agent = ae.HTTPAgent(self._cfg())
-        with patch("urllib.request.urlopen",
-                   side_effect=urllib.error.URLError("boom")):
-            resp = asyncio.run(agent.ask("¿?"))
-        assert resp.error is not None
-        assert resp.error_type in ("http", "timeout")
 
-    def test_timeout(self):
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            with pytest.raises(
+                ValueError,
+                match="missing answer",
+            ):
+                asyncio.run(agent.run(sample_item))
+
+    def test_contexts_must_be_list(self, sample_item):
+        body = json.dumps(
+            {
+                "answer": "ok",
+                "contexts": "invalid",
+            }
+        )
+
         agent = ae.HTTPAgent(self._cfg())
-        with patch("urllib.request.urlopen",
-                   side_effect=urllib.error.URLError("timed out")):
-            resp = asyncio.run(agent.ask("¿?"))
-        assert resp.error_type == "timeout"
 
-    def test_auth_env(self, monkeypatch):
-        monkeypatch.setenv("MY_TOKEN", "secreto")
-        cfg = self._cfg()
-        cfg["auth_env"] = "MY_TOKEN"
-        agent = ae.HTTPAgent(cfg)
-        assert agent.auth == "secreto"
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            with pytest.raises(
+                ValueError,
+                match="must be a list",
+            ):
+                asyncio.run(agent.run(sample_item))
+
+    def test_missing_contexts_defaults_to_empty(self, sample_item):
+        body = json.dumps(
+            {
+                "answer": "ok",
+            }
+        )
+
+        agent = ae.HTTPAgent(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            response = asyncio.run(agent.run(sample_item))
+
+        assert response.contexts == []
+
+    def test_invalid_json(self, sample_item):
+        agent = ae.HTTPAgent(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse("not-json"),
+        ):
+            with pytest.raises(json.JSONDecodeError):
+                asyncio.run(agent.run(sample_item))
+
+    def test_http_error(self, sample_item):
+        error = urllib.error.HTTPError(
+            "http://fake.test/chat",
+            500,
+            "server error",
+            {},
+            None,
+        )
+
+        agent = ae.HTTPAgent(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=error,
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Agent HTTP 500",
+            ):
+                asyncio.run(agent.run(sample_item))
+
+    def test_url_error(self, sample_item):
+        error = urllib.error.URLError("connection refused")
+        agent = ae.HTTPAgent(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=error,
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Agent connection error",
+            ):
+                asyncio.run(agent.run(sample_item))
 
 
 # ===========================================================================
-# 6. LLMClient (con urlopen mockeado)
+# 9. LLMClient
 # ===========================================================================
 
 class TestLLMClient:
-    def _client(self):
-        return ae.LLMClient(
-            base_url="http://fake/v1",
-            model="gpt-4o-mini",
-            api_key="fake",
+    def _cfg(self):
+        return {
+            "base_url": "http://fake.test/v1",
+            "model": "test-model",
+            "api_key_env": "TEST_LLM_KEY",
+            "timeout_s": 5,
+            "retries": 0,
+            "temperature": 0.0,
+            "max_tokens": 100,
+        }
+
+    def test_init_reads_config(self, monkeypatch):
+        monkeypatch.setenv(
+            "TEST_LLM_KEY",
+            "secret",
         )
 
-    def test_complete_ok(self):
-        body = json.dumps({
-            "choices": [{"message": {"content": '{"score": 0.9}'}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-        })
-        client = self._client()
-        with patch("urllib.request.urlopen",
-                   return_value=FakeResponse(body)):
-            text, t_in, t_out = asyncio.run(client.complete("sys", "user"))
+        client = ae.LLMClient(self._cfg())
+
+        assert client.base_url == "http://fake.test/v1"
+        assert client.model == "test-model"
+        assert client.timeout_s == 5.0
+        assert client.retries == 0
+        assert client.temperature == 0.0
+        assert client.max_tokens == 100
+        assert client.api_key == "secret"
+
+    def test_complete_with_provider_usage(self, monkeypatch):
+        monkeypatch.setenv(
+            "TEST_LLM_KEY",
+            "secret",
+        )
+
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"score": 0.9}'
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                },
+            }
+        )
+
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            text, usage = asyncio.run(
+                client.complete(
+                    [
+                        {
+                            "role": "user",
+                            "content": "hello",
+                        }
+                    ]
+                )
+            )
+
         assert text == '{"score": 0.9}'
-        assert t_in == 10
-        assert t_out == 5
+        assert usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+        }
 
-    def test_sin_usage_estima(self):
-        body = json.dumps({
-            "choices": [{"message": {"content": "hola"}}],
-        })
-        client = self._client()
-        with patch("urllib.request.urlopen",
-                   return_value=FakeResponse(body)):
-            text, t_in, t_out = asyncio.run(client.complete("sys", "user"))
-        assert t_in > 0
-        assert t_out > 0
-
-    def test_http_500_reintenta_y_falla(self):
-        client = self._client()
-        err = urllib.error.HTTPError(
-            "http://fake", 500, "boom", {}, None,
+    def test_complete_estimates_missing_usage(self):
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "hello"
+                        }
+                    }
+                ]
+            }
         )
-        with patch("urllib.request.urlopen", side_effect=err), \
-             patch.object(ae, "JUDGE_RETRY_DELAY", 0.0):
-            with pytest.raises(RuntimeError, match="HTTP 500"):
-                asyncio.run(client.complete("sys", "user"))
 
-    def test_http_401_no_reintenta(self):
-        client = self._client()
-        err = urllib.error.HTTPError(
-            "http://fake", 401, "no auth", {}, None,
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            text, usage = asyncio.run(
+                client.complete(
+                    [
+                        {
+                            "role": "user",
+                            "content": "hello",
+                        }
+                    ]
+                )
+            )
+
+        assert text == "hello"
+        assert usage["prompt_tokens"] > 0
+        assert usage["completion_tokens"] > 0
+
+    def test_complete_requires_choices(self):
+        body = json.dumps(
+            {
+                "choices": [],
+            }
         )
-        with patch("urllib.request.urlopen", side_effect=err) as m:
-            with pytest.raises(RuntimeError, match="HTTP 401"):
-                asyncio.run(client.complete("sys", "user"))
-        assert m.call_count == 1
+
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="no choices",
+            ):
+                asyncio.run(client.complete([]))
+
+    def test_complete_requires_content(self):
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {},
+                    }
+                ]
+            }
+        )
+
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            return_value=FakeHTTPResponse(body),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="no message content",
+            ):
+                asyncio.run(client.complete([]))
+
+    def test_http_error_is_wrapped(self):
+        error = urllib.error.HTTPError(
+            "http://fake.test/v1/chat/completions",
+            500,
+            "server error",
+            {},
+            FakeHTTPResponse('{"error":"boom"}'),
+        )
+
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=error,
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="LLM HTTP 500",
+            ):
+                asyncio.run(client.complete([]))
+
+    def test_url_error_is_wrapped(self):
+        client = ae.LLMClient(self._cfg())
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=urllib.error.URLError(
+                "connection refused"
+            ),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="LLM connection error",
+            ):
+                asyncio.run(client.complete([]))
+
+    def test_retries_then_fails(self):
+        cfg = self._cfg()
+        cfg["retries"] = 2
+
+        client = ae.LLMClient(cfg)
+
+        async def no_sleep(_):
+            return None
+
+        with patch.object(
+            ae,
+            "urlopen",
+            side_effect=urllib.error.URLError(
+                "temporary failure"
+            ),
+        ), patch.object(
+            ae.asyncio,
+            "sleep",
+            new=no_sleep,
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="LLM connection error",
+            ):
+                asyncio.run(client.complete([]))
 
 
 # ===========================================================================
-# 7. Métricas individuales (juez mockeado)
+# 10. Judge
 # ===========================================================================
 
-class _FakeJudge:
-    """Juez determinista que devuelve siempre el mismo score."""
+class TestJudge:
+    def test_unknown_metric(self, sample_item, sample_response):
+        judge = ae.Judge(FakeJudgeClient())
 
-    def __init__(self, score: float, reasoning: str = "ok"):
-        self.score = score
-        self.reasoning = reasoning
-        self.model = "fake"
+        with pytest.raises(
+            ValueError,
+            match="Unknown metric",
+        ):
+            asyncio.run(
+                judge.evaluate(
+                    "unknown",
+                    sample_item,
+                    sample_response,
+                )
+            )
 
-    async def complete(self, system: str, user: str):
-        payload = json.dumps({"score": self.score, "reasoning": self.reasoning})
-        return payload, 10, 5
-
-
-class TestMetrics:
-    def test_faithfulness_sin_contextos(self, sample_item):
-        resp = ae.AgentResponse(answer="x", contexts=[])
-        judgment, _, _ = asyncio.run(
-            ae.metric_faithfulness(_FakeJudge(0.9), sample_item, resp)
+    def test_context_recall_without_ground_truth(
+        self,
+        sample_response,
+    ):
+        item = ae.EvalItem(
+            id="1",
+            question="q",
+            ground_truth=None,
         )
-        assert judgment.score == 0.0
+        judge = ae.Judge(FakeJudgeClient(0.9))
 
-    def test_faithfulness_con_contextos(self, sample_item, sample_response):
-        judgment, t_in, t_out = asyncio.run(
-            ae.metric_faithfulness(
-                _FakeJudge(0.85), sample_item, sample_response
+        result = asyncio.run(
+            judge.evaluate(
+                "context_recall",
+                item,
+                sample_response,
             )
         )
-        assert judgment.score == 0.85
-        assert t_in > 0 and t_out > 0
 
-    def test_answer_relevance(self, sample_item, sample_response):
-        judgment, _, _ = asyncio.run(
-            ae.metric_answer_relevance(
-                _FakeJudge(0.7), sample_item, sample_response
+        assert result.score == 0.0
+        assert "no ground truth" in result.reasoning
+
+    def test_faithfulness(self, sample_item, sample_response):
+        judge = ae.Judge(
+            FakeJudgeClient(
+                score=0.85,
+                reasoning="supported",
             )
         )
-        assert judgment.score == 0.7
 
-    def test_context_precision_sin_contextos(self, sample_item):
-        resp = ae.AgentResponse(answer="x", contexts=[])
-        judgment, _, _ = asyncio.run(
-            ae.metric_context_precision(_FakeJudge(0.9), sample_item, resp)
-        )
-        assert judgment.score == 0.0
-
-    def test_context_recall_sin_ground_truth(self):
-        item = ae.EvalItem(id="x", question="q", ground_truth=None)
-        resp = ae.AgentResponse(answer="a", contexts=["c"])
-        judgment, _, _ = asyncio.run(
-            ae.metric_context_recall(_FakeJudge(0.9), item, resp)
-        )
-        assert judgment.score == 0.0
-
-    def test_score_fuera_de_rango_se_recorta(self, sample_item, sample_response):
-        judgment, _, _ = asyncio.run(
-            ae.metric_faithfulness(
-                _FakeJudge(5.0), sample_item, sample_response
+        result = asyncio.run(
+            judge.evaluate(
+                "faithfulness",
+                sample_item,
+                sample_response,
             )
         )
-        assert judgment.score == 1.0
+
+        assert result.metric == "faithfulness"
+        assert result.score == pytest.approx(0.85)
+        assert result.reasoning == "supported"
+        assert result.tokens_in == 10
+        assert result.tokens_out == 5
+        assert result.raw["score"] == 0.85
+
+    def test_score_is_clamped_high(
+        self,
+        sample_item,
+        sample_response,
+    ):
+        judge = ae.Judge(FakeJudgeClient(score=2.0))
+
+        result = asyncio.run(
+            judge.evaluate(
+                "answer_relevance",
+                sample_item,
+                sample_response,
+            )
+        )
+
+        assert result.score == 1.0
+
+    def test_score_is_clamped_low(
+        self,
+        sample_item,
+        sample_response,
+    ):
+        judge = ae.Judge(FakeJudgeClient(score=-1.0))
+
+        result = asyncio.run(
+            judge.evaluate(
+                "answer_relevance",
+                sample_item,
+                sample_response,
+            )
+        )
+
+        assert result.score == 0.0
+
+    def test_non_object_json(self, sample_item, sample_response):
+        class ArrayClient:
+            async def complete(self, messages):
+                return "[1, 2, 3]", {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                }
+
+        judge = ae.Judge(ArrayClient())
+
+        with pytest.raises(
+            ValueError,
+            match="JSON object",
+        ):
+            asyncio.run(
+                judge.evaluate(
+                    "faithfulness",
+                    sample_item,
+                    sample_response,
+                )
+            )
+
+    def test_missing_score_defaults_to_zero(
+        self,
+        sample_item,
+        sample_response,
+    ):
+        class NoScoreClient:
+            async def complete(self, messages):
+                return '{"reasoning":"missing"}', {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                }
+
+        judge = ae.Judge(NoScoreClient())
+
+        result = asyncio.run(
+            judge.evaluate(
+                "faithfulness",
+                sample_item,
+                sample_response,
+            )
+        )
+
+        assert result.score == 0.0
 
 
 # ===========================================================================
-# 8. Evaluator
+# 11. Evaluator
 # ===========================================================================
 
 class TestEvaluator:
-    def _cfg(self):
-        cfg = json.loads(json.dumps(ae.CONFIG))
-        cfg["eval"]["metrics"] = ["faithfulness", "latency_ms"]
+    def _config(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["eval"]["metrics"] = [
+            "faithfulness",
+            "answer_relevance",
+        ]
         cfg["eval"]["concurrency"] = 2
-        cfg["eval"]["pass_threshold"] = 0.5
+        cfg["eval"]["pass_threshold"] = 0.7
         return cfg
 
-    def test_evaluate_item_ok(self, builtin_agent, sample_item):
-        cfg = self._cfg()
-        evaluator = ae.Evaluator(cfg, builtin_agent, _FakeJudge(0.9))
-        result = asyncio.run(evaluator.evaluate_item(sample_item))
-        assert result.passed is True
-        assert result.metrics["faithfulness"] == 0.9
-        assert "latency_ms" in result.metrics
+    def test_success_with_judge(
+        self,
+        base_config,
+        sample_item,
+    ):
+        cfg = self._config(base_config)
 
-    def test_evaluate_item_falla_umbral(self, builtin_agent, sample_item):
-        cfg = self._cfg()
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=ae.Judge(FakeJudgeClient(0.9)),
+            cfg=cfg,
+        )
+
+        result = asyncio.run(
+            evaluator.evaluate_item(sample_item)
+        )
+
+        assert result.response is not None
+        assert result.passed is True
+        assert len(result.judgments) == 2
+        assert result.error is None
+
+    def test_fails_threshold(
+        self,
+        base_config,
+        sample_item,
+    ):
+        cfg = self._config(base_config)
         cfg["eval"]["pass_threshold"] = 0.95
-        evaluator = ae.Evaluator(cfg, builtin_agent, _FakeJudge(0.5))
-        result = asyncio.run(evaluator.evaluate_item(sample_item))
+
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=ae.Judge(FakeJudgeClient(0.9)),
+            cfg=cfg,
+        )
+
+        result = asyncio.run(
+            evaluator.evaluate_item(sample_item)
+        )
+
         assert result.passed is False
 
-    def test_metricas_invalidas_se_ignoran(self, builtin_agent):
-        cfg = self._cfg()
-        cfg["eval"]["metrics"] = ["faithfulness", "metrica_inventada"]
-        evaluator = ae.Evaluator(cfg, builtin_agent, _FakeJudge(0.9))
-        result = asyncio.run(
-            evaluator.evaluate_item(ae.EvalItem(id="x", question="q"))
+    def test_no_metrics_does_not_require_judge(
+        self,
+        base_config,
+        sample_item,
+    ):
+        cfg = self._config(base_config)
+        cfg["eval"]["metrics"] = []
+
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=None,
+            cfg=cfg,
         )
-        assert "metrica_inventada" not in result.metrics
-        assert "faithfulness" in result.metrics
 
+        result = asyncio.run(
+            evaluator.evaluate_item(sample_item)
+        )
 
-# ===========================================================================
-# 9. Persistencia SQLite
-# ===========================================================================
+        assert result.response is not None
+        assert result.judgments == []
 
-class TestPersistResults:
-    def test_crea_db_y_tablas(self, tmp_path):
-        results = [
-            ae.ItemResult(
-                item=ae.EvalItem(id="q1", question="¿?"),
-                response=ae.AgentResponse(
-                    answer="a", contexts=["c"], latency_ms=10.0,
-                ),
-                judgments={
-                    "faithfulness": ae.Judgment(score=0.9, reasoning="ok"),
-                },
-                metrics={"faithfulness": 0.9},
-                passed=True,
+    def test_metrics_require_judge(
+        self,
+        base_config,
+        sample_item,
+    ):
+        cfg = self._config(base_config)
+
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=None,
+            cfg=cfg,
+        )
+
+        result = asyncio.run(
+            evaluator.evaluate_item(sample_item)
+        )
+
+        assert result.response is None
+        assert result.error_type == "RuntimeError"
+        assert "LLM judge is required" in result.error
+
+    def test_agent_failure_is_captured(
+        self,
+        base_config,
+        sample_item,
+    ):
+        class BrokenAgent:
+            async def run(self, item):
+                raise RuntimeError("agent exploded")
+
+        cfg = self._config(base_config)
+
+        evaluator = ae.Evaluator(
+            agent=BrokenAgent(),
+            judge=None,
+            cfg=cfg,
+        )
+
+        result = asyncio.run(
+            evaluator.evaluate_item(sample_item)
+        )
+
+        assert result.response is None
+        assert result.passed is False
+        assert result.error == "agent exploded"
+        assert result.error_type == "RuntimeError"
+
+    def test_run_multiple_items(self, base_config):
+        cfg = self._config(base_config)
+
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=ae.Judge(FakeJudgeClient(0.9)),
+            cfg=cfg,
+        )
+
+        items = [
+            ae.EvalItem(
+                id="1",
+                question="What is Python?",
+                contexts=["Python is a language."],
+            ),
+            ae.EvalItem(
+                id="2",
+                question="What is SQLite?",
+                contexts=["SQLite is a database."],
             ),
         ]
-        db = tmp_path / "out.db"
-        ae.persist_results(results, str(db))
-        assert db.exists()
+
+        results = asyncio.run(evaluator.run(items))
+
+        assert len(results) == 2
+        assert [r.item.id for r in results] == ["1", "2"]
+
+    def test_calculate_cost(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["agent"]["prices"] = {
+            "input_per_1m": 1.0,
+            "output_per_1m": 2.0,
+        }
+        cfg["judge"]["prices"] = {
+            "input_per_1m": 3.0,
+            "output_per_1m": 4.0,
+        }
+
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=None,
+            cfg=cfg,
+        )
+
+        response = ae.AgentResponse(
+            answer="a",
+            tokens_in=1_000_000,
+            tokens_out=500_000,
+        )
+        judgment = ae.Judgment(
+            metric="faithfulness",
+            score=1.0,
+            tokens_in=2_000_000,
+            tokens_out=250_000,
+        )
+
+        cost = evaluator._calculate_cost(
+            response,
+            [judgment],
+        )
+
+        expected = 1.0 + 1.0 + 6.0 + 1.0
+
+        assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_without_response(self, base_config):
+        evaluator = ae.Evaluator(
+            agent=ae.BuiltinAgent(),
+            judge=None,
+            cfg=base_config,
+        )
+
+        assert (
+            evaluator._calculate_cost(
+                None,
+                [],
+            )
+            == 0.0
+        )
+
+
+# ===========================================================================
+# 12. Aggregation
+# ===========================================================================
+
+class TestAggregateResults:
+    def test_empty(self):
+        summary = ae.aggregate_results([])
+
+        assert summary["total"] == 0
+        assert summary["passed"] == 0
+        assert summary["failed"] == 0
+        assert summary["errors"] == 0
+        assert summary["pass_rate"] == 0.0
+        assert summary["cost_usd"] == 0.0
+
+    def test_complete_summary(self):
+        item = ae.EvalItem(
+            id="1",
+            question="q",
+        )
+
+        result = ae.ItemResult(
+            item=item,
+            response=ae.AgentResponse(
+                answer="a",
+                latency_ms=10,
+                tokens_in=100,
+                tokens_out=50,
+            ),
+            judgments=[
+                ae.Judgment(
+                    metric="faithfulness",
+                    score=1.0,
+                    tokens_in=20,
+                    tokens_out=5,
+                )
+            ],
+            passed=True,
+            cost_usd=0.5,
+        )
+
+        summary = ae.aggregate_results([result])
+
+        assert summary["total"] == 1
+        assert summary["passed"] == 1
+        assert summary["failed"] == 0
+        assert summary["errors"] == 0
+        assert summary["pass_rate"] == 1.0
+        assert summary["latency_ms"]["mean"] == 10
+        assert summary["latency_ms"]["p50"] == 10
+        assert summary["latency_ms"]["p95"] == 10
+        assert summary["tokens"]["agent_in"] == 100
+        assert summary["tokens"]["agent_out"] == 50
+        assert summary["tokens"]["judge_in"] == 20
+        assert summary["tokens"]["judge_out"] == 5
+        assert summary["tokens"]["total"] == 175
+        assert summary["metrics"]["faithfulness"] == 1.0
+        assert summary["cost_usd"] == 0.5
+
+    def test_failed_result_without_response(self):
+        result = ae.ItemResult(
+            item=ae.EvalItem(
+                id="1",
+                question="q",
+            ),
+            response=None,
+            passed=False,
+            error="boom",
+            error_type="RuntimeError",
+        )
+
+        summary = ae.aggregate_results([result])
+
+        assert summary["total"] == 1
+        assert summary["passed"] == 0
+        assert summary["failed"] == 1
+        assert summary["errors"] == 1
+        assert summary["pass_rate"] == 0.0
+
+
+# ===========================================================================
+# 13. SQLite persistence
+# ===========================================================================
+
+def _persist_kwargs(cfg):
+    return {
+        "run_id": "run-1",
+        "dataset_hash_value": "dataset-hash",
+        "config_hash_value": "config-hash",
+        "cfg": cfg,
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T00:00:01+00:00",
+        "elapsed_s": 1.0,
+    }
+
+
+class TestSQLite:
+    def test_persist_results(self, tmp_path, base_config):
+        db = tmp_path / "results.db"
+
+        result = ae.ItemResult(
+            item=ae.EvalItem(
+                id="q1",
+                question="Question",
+                ground_truth="Answer",
+                contexts=["gold"],
+            ),
+            response=ae.AgentResponse(
+                answer="Answer",
+                contexts=["ctx"],
+                latency_ms=10.0,
+                tokens_in=10,
+                tokens_out=5,
+            ),
+            judgments=[
+                ae.Judgment(
+                    metric="faithfulness",
+                    score=0.9,
+                    reasoning="supported",
+                )
+            ],
+            passed=True,
+            cost_usd=0.001,
+        )
+
+        ae.persist_results(
+            [result],
+            db,
+            **_persist_kwargs(base_config),
+        )
 
         conn = sqlite3.connect(db)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM evaluations")
-        assert cur.fetchone()[0] == 1
-        cur.execute("SELECT COUNT(*) FROM metrics")
-        assert cur.fetchone()[0] == 1
-        cur.execute("SELECT passed FROM evaluations WHERE id='q1'")
-        assert cur.fetchone()[0] == 1
-        conn.close()
 
-    def test_sobrescribe_db_existente(self, tmp_path):
-        db = tmp_path / "out.db"
-        db.write_text("basura", encoding="utf-8")
-        ae.persist_results([], str(db))
+        try:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM runs"
+            ).fetchone()[0] == 1
+
+            assert conn.execute(
+                "SELECT COUNT(*) FROM evaluations"
+            ).fetchone()[0] == 1
+
+            assert conn.execute(
+                "SELECT COUNT(*) FROM metrics"
+            ).fetchone()[0] == 1
+
+            row = conn.execute(
+                """
+                SELECT id, answer, passed, cost_usd
+                FROM evaluations
+                """
+            ).fetchone()
+
+            assert row == (
+                "q1",
+                "Answer",
+                1,
+                0.001,
+            )
+        finally:
+            conn.close()
+
+    def test_historical_runs_are_preserved(
+        self,
+        tmp_path,
+        base_config,
+    ):
+        db = tmp_path / "results.db"
+
+        result = ae.ItemResult(
+            item=ae.EvalItem(
+                id="q1",
+                question="q",
+            ),
+            response=ae.AgentResponse(answer="a"),
+        )
+
+        ae.persist_results(
+            [result],
+            db,
+            **_persist_kwargs(base_config),
+        )
+
+        second_kwargs = _persist_kwargs(base_config)
+        second_kwargs["run_id"] = "run-2"
+
+        ae.persist_results(
+            [result],
+            db,
+            **second_kwargs,
+        )
+
         conn = sqlite3.connect(db)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM evaluations")
-        assert cur.fetchone()[0] == 0
-        conn.close()
+
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM runs"
+            ).fetchone()[0]
+            assert count == 2
+        finally:
+            conn.close()
 
 
 # ===========================================================================
-# 10. load_dataset
-# ===========================================================================
-
-class TestLoadDataset:
-    def _cfg(self, path):
-        cfg = json.loads(json.dumps(ae.CONFIG))
-        cfg["dataset"]["path"] = str(path)
-        return cfg
-
-    def test_dataset_valido(self, tmp_path):
-        p = tmp_path / "d.jsonl"
-        p.write_text(
-            '{"id": "a", "question": "q1"}\n'
-            '{"id": "b", "question": "q2", "ground_truth": "gt"}\n',
-            encoding="utf-8",
-        )
-        items = ae.load_dataset(self._cfg(p))
-        assert len(items) == 2
-        assert items[0].id == "a"
-        assert items[1].ground_truth == "gt"
-
-    def test_ignora_lineas_vacias_y_comentarios(self, tmp_path):
-        p = tmp_path / "d.jsonl"
-        p.write_text(
-            '# comentario\n{"id": "a", "question": "q"}\n\n',
-            encoding="utf-8",
-        )
-        items = ae.load_dataset(self._cfg(p))
-        assert len(items) == 1
-
-    def test_falta_question(self, tmp_path):
-        p = tmp_path / "d.jsonl"
-        p.write_text('{"id": "a"}\n', encoding="utf-8")
-        with pytest.raises(SystemExit, match="falta campo requerido"):
-            ae.load_dataset(self._cfg(p))
-
-    def test_json_invalido(self, tmp_path):
-        p = tmp_path / "d.jsonl"
-        p.write_text("no json\n", encoding="utf-8")
-        with pytest.raises(SystemExit, match="JSON inválido"):
-            ae.load_dataset(self._cfg(p))
-
-    def test_id_por_defecto_es_linea(self, tmp_path):
-        p = tmp_path / "d.jsonl"
-        p.write_text('{"question": "q"}\n', encoding="utf-8")
-        items = ae.load_dataset(self._cfg(p))
-        assert items[0].id == "1"
-
-
-# ===========================================================================
-# 11. render_report
+# 14. Reporting
 # ===========================================================================
 
 class TestRenderReport:
-    def _cfg(self):
-        cfg = json.loads(json.dumps(ae.CONFIG))
-        cfg["eval"]["metrics"] = ["faithfulness"]
-        return cfg
-
-    def _result(self, score: float, passed: bool):
+    def _result(self, score, passed, error=None):
         return ae.ItemResult(
-            item=ae.EvalItem(id="q1", question="¿?"),
-            response=ae.AgentResponse(
-                answer="a", contexts=["c"], latency_ms=10.0,
+            item=ae.EvalItem(
+                id="q1",
+                question="Question?",
             ),
-            judgments={"faithfulness": ae.Judgment(score=score)},
-            metrics={"faithfulness": score, "latency_ms": 10.0},
+            response=ae.AgentResponse(
+                answer="Answer",
+                contexts=["Context"],
+                latency_ms=12.5,
+                tokens_in=10,
+                tokens_out=5,
+            ),
+            judgments=[
+                ae.Judgment(
+                    metric="faithfulness",
+                    score=score,
+                    reasoning="reason",
+                )
+            ],
             passed=passed,
+            error=error,
+            error_type="RuntimeError" if error else None,
+            cost_usd=0.001,
         )
 
-    def test_incluye_secciones(self):
-        cfg = self._cfg()
+    def test_report_contains_summary(self, base_config):
         report = ae.render_report(
+            [
+                self._result(0.9, True),
+            ],
+            base_config,
+            dataset_hash_value="dataset",
+            config_hash_value="config",
+            run_id="run",
+            elapsed_s=1.23,
+        )
+
+        assert "# Agent-Eval Report" in report
+        assert "dataset" in report
+        assert "config" in report
+        assert "run" in report
+        assert "faithfulness" in report
+
+    def test_report_contains_configuration(self, base_config):
+        report = ae.render_report(
+            [],
+            base_config,
+            dataset_hash_value="d",
+            config_hash_value="c",
+            run_id="r",
+            elapsed_s=0.1,
+        )
+
+        assert "## Configuration" in report
+        assert "```json" in report
+        assert '"judge"' in report
+
+    def test_report_contains_results_table(self, base_config):
+        report = ae.render_report(
+            [
+                self._result(0.9, True),
+            ],
+            base_config,
+            dataset_hash_value="d",
+            config_hash_value="c",
+            run_id="r",
+            elapsed_s=0.1,
+        )
+
+        assert "## Results" in report
+        assert "q1" in report
+        assert "12.5" in report
+
+    def test_report_contains_failures(self, base_config):
+        report = ae.render_report(
+            [
+                self._result(
+                    0.2,
+                    False,
+                    error="boom",
+                ),
+            ],
+            base_config,
+            dataset_hash_value="d",
+            config_hash_value="c",
+            run_id="r",
+            elapsed_s=0.1,
+        )
+
+        assert "## Failures" in report
+        assert "RuntimeError" in report
+        assert "boom" in report
+        assert "Answer" in report
+
+    def test_report_without_metrics(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["eval"]["metrics"] = []
+
+        report = ae.render_report(
+            [],
             cfg,
-            [self._result(0.9, True), self._result(0.4, False)],
-            "deadbeef",
-            1.23,
+            dataset_hash_value="d",
+            config_hash_value="c",
+            run_id="r",
+            elapsed_s=0.1,
         )
-        assert "# Informe de evaluación" in report
-        assert "deadbeef" in report
-        assert "## 1. Resumen ejecutivo" in report
-        assert "## 4. Métricas agregadas" in report
-        assert "## 6. Análisis de fallos" in report
-        assert "```mermaid" in report
 
-    def test_veredicto_apto(self):
-        cfg = self._cfg()
-        report = ae.render_report(
-            cfg, [self._result(0.9, True)], "h", 1.0,
-        )
-        assert "✅ APTO" in report
-
-    def test_veredicto_revisar_por_fallos(self):
-        cfg = self._cfg()
-        report = ae.render_report(
-            cfg, [self._result(0.4, False)], "h", 1.0,
-        )
-        assert "⚠️ REVISAR" in report
-
-    def test_sin_mermaid_si_desactivado(self):
-        cfg = self._cfg()
-        cfg["output"]["include_mermaid"] = False
-        report = ae.render_report(
-            cfg, [self._result(0.9, True)], "h", 1.0,
-        )
-        assert "```mermaid" not in report
+        assert "No LLM metrics were configured." in report
 
 
 # ===========================================================================
-# 12. Self-tests embebidos del monolito
-# ===========================================================================
-
-class TestSelfTests:
-    def test_selftests_pasan(self):
-        rc = ae.run_selftests()
-        assert rc == 0
-
-
-# ===========================================================================
-# 13. Demo end-to-end
+# 15. Demo
 # ===========================================================================
 
 class TestDemo:
-    def test_demo_config(self):
-        cfg = ae.demo_config()
-        assert cfg["agent"]["type"] == "builtin"
-        assert cfg["dataset"]["path"] == "(demo)"
-
     def test_demo_dataset(self):
-        items = ae.load_demo_dataset()
+        items = ae.demo_dataset()
+
         assert len(items) == 3
-        assert all(i.question for i in items)
+        assert all(
+            isinstance(item, ae.EvalItem)
+            for item in items
+        )
+        assert all(
+            item.question
+            for item in items
+        )
+
+    def test_demo_dataset_hash(self):
+        items = ae.demo_dataset()
+
+        assert ae.dataset_hash(items)
+
+    def test_build_builtin_agent(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["agent"]["type"] = "builtin"
+
+        agent = ae.build_agent(cfg)
+
+        assert isinstance(agent, ae.BuiltinAgent)
+
+    def test_build_http_agent(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["agent"]["type"] = "http"
+
+        agent = ae.build_agent(cfg)
+
+        assert isinstance(agent, ae.HTTPAgent)
+
+    def test_build_unknown_agent(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["agent"]["type"] = "unknown"
+
+        with pytest.raises(
+            ValueError,
+            match="Unsupported agent type",
+        ):
+            ae.build_agent(cfg)
+
+    def test_build_judge_without_metrics(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["eval"]["metrics"] = []
+
+        assert ae.build_judge(cfg) is None
+
+    def test_build_judge_with_metrics(self, base_config):
+        cfg = json.loads(json.dumps(base_config))
+        cfg["eval"]["metrics"] = ["faithfulness"]
+
+        judge = ae.build_judge(cfg)
+
+        assert isinstance(judge, ae.Judge)
+
+
+# ===========================================================================
+# 16. Self-test embebido
+# ===========================================================================
+
+class TestEmbeddedSelftest:
+    def test_selftest_passes(self):
+        ae.selftest()
+
+
+# ===========================================================================
+# 17. CLI
+# ===========================================================================
+
+class TestCLI:
+    def test_parse_args_defaults(self):
+        with patch.object(
+            sys,
+            "argv",
+            ["agent-eval.py"],
+        ):
+            args = ae.parse_args()
+
+        assert args.config is None
+        assert args.dataset is None
+        assert args.agent_url is None
+        assert args.judge_model is None
+        assert args.output is None
+        assert args.concurrency is None
+        assert args.demo is False
+        assert args.selftest is False
+        assert args.no_sqlite is False
+        assert args.verbose is False
+
+    def test_parse_args_flags(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "agent-eval.py",
+                "--demo",
+                "--no-sqlite",
+                "--verbose",
+                "--concurrency",
+                "2",
+                "--output",
+                "report.md",
+            ],
+        ):
+            args = ae.parse_args()
+
+        assert args.demo is True
+        assert args.no_sqlite is True
+        assert args.verbose is True
+        assert args.concurrency == 2
+        assert args.output == "report.md"
