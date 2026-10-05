@@ -1,0 +1,68 @@
+name: CI
+
+on:
+push:
+branches: [main, master]
+pull_request:
+workflow_dispatch:
+
+jobs:
+test:
+name: Python ${{ matrix.python-version }}
+runs-on: ubuntu-latest
+strategy:
+fail-fast: false
+matrix:
+python-version: ["3.10", "3.11", "3.12"]
+
+```
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
+
+  - name: Setup Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: ${{ matrix.python-version }}
+
+  - name: Self-tests embebidos del monolito
+    run: python agent-eval.py --selftest
+
+  - name: Demo end-to-end
+    run: python agent-eval.py --demo
+
+  - name: Verificar artefactos generados
+    run: |
+      test -f eval-report.md
+      test -f eval-results.db
+
+  - name: Subir informe de demo
+    if: matrix.python-version == '3.12'
+    uses: actions/upload-artifact@v4
+    with:
+      name: demo-report
+      path: |
+        eval-report.md
+        eval-results.db
+
+  - name: Instalar dependencias de test
+    run: |
+      python -m pip install --upgrade pip
+      pip install pytest pytest-cov
+
+  - name: Ejecutar tests con cobertura
+    run: |
+      pytest \
+        --cov=. \
+        --cov-report=term-missing \
+        --cov-report=xml \
+        --cov-fail-under=60
+
+  - name: Subir cobertura a Codecov (opcional)
+    if: matrix.python-version == '3.12'
+    uses: codecov/codecov-action@v4
+    continue-on-error: true
+    with:
+      files: ./coverage.xml
+      fail_ci_if_error: false
+```
