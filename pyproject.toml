@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "agent-eval"
 version = "0.2.2"
@@ -6,34 +10,50 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-{ name = "David Ferrandez Canalis" }
+    { name = "David Ferrandez Canalis", email = "contact@orbitalronin94.github.io" }
+]
+# Dependencias base necesarias para que agent-eval.py arranque
+dependencies = [
+    "pydantic>=2.0",
+    "langchain-core>=0.1",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-yaml = ["pyyaml>=6.0"]
 dev = [
-"pytest>=7.4",
-"pytest-cov>=4.1",
-"pyyaml>=6.0",
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1.0", # Añadido para linting rápido en tu stack
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short --strict-markers"
 python_files = ["test_*.py"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
 
 [tool.coverage.run]
 branch = true
 source = ["."]
 omit = [
-"tests/*",
-"*/**pycache**/*",
+    "tests/*",
+    "*/__pycache__/*",
+    "*.egg-info/*",
 ]
 
 [tool.coverage.report]
 exclude_lines = [
-"pragma: no cover",
-"if **name** == .**main**.:",
-"raise NotImplementedError",
-"if TYPE_CHECKING:",
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "pass",
 ]
