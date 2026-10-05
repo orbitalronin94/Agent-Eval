@@ -9,12 +9,11 @@ demo:
 $(PYTHON) agent-eval.py --demo
 
 test:
-pytest -q
+$(PYTHON) -m pytest -q
 
 cov:
-pytest --cov=. --cov-report=term-missing
+$(PYTHON) -m pytest --cov=. --cov-report=term-missing
 
 clean:
-rm -rf pycache .pytest_cache .coverage htmlcov
-find . -type f −name"∗.pyc"−o−name"∗.pyo"-name "*.pyc" -o -name "*.pyo" -delete
-
+rm -rf **pycache** .pytest_cache .coverage htmlcov
+find . -type f \(-name "*.pyc" -o -name "*.pyo"\) -delete
