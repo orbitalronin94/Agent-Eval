@@ -1,4 +1,3 @@
-````python
 #!/usr/bin/env python3
 """
 Agent-Eval: lightweight evaluation harness for agents/RAG systems.
