@@ -1,69 +1,81 @@
 name: CI
 
 on:
-push:
-branches: [main, master]
-pull_request:
-workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-test:
-name: Python ${{ matrix.python-version }}
-runs-on: ubuntu-latest
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
 
-```
-strategy:
-  fail-fast: false
-  matrix:
-    python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-steps:
-  - name: Checkout
-    uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
-  - name: Setup Python
-    uses: actions/setup-python@v5
-    with:
-      python-version: ${{ matrix.python-version }}
+      # Cache de pip/uv para acelerar matrices y ahorrar minutos
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
-  - name: Self-tests embebidos del monolito
-    run: python agent-eval.py --selftest
+      # ⚠️ CORRECCIÓN: Las dependencias DEBEN instalarse antes de ejecutar cualquier script
+      - name: Instalar dependencias de test
+        run: |
+          python -m pip install --upgrade pip uv
+          # Usa uv para instalación paralela y resolución más estricta
+          uv pip install --system pytest pytest-cov pyyaml
+          # Si tienes requirements.txt o pyproject.toml, descomenta:
+          # uv pip install --system -r requirements.txt
 
-  - name: Demo end-to-end
-    run: python agent-eval.py --demo
+      - name: Self-tests embebidos del monolito
+        run: python agent-eval.py --selftest
 
-  - name: Verificar artefactos generados
-    run: |
-      test -f eval-report.md
-      test -f eval-results.db
+      - name: Demo end-to-end
+        run: python agent-eval.py --demo
 
-  - name: Subir informe de demo
-    if: matrix.python-version == '3.12'
-    uses: actions/upload-artifact@v4
-    with:
-      name: demo-report
-      path: |
-        eval-report.md
-        eval-results.db
+      - name: Verificar artefactos generados
+        run: |
+          test -f eval-report.md || { echo "❌ Falta eval-report.md"; exit 1; }
+          test -f eval-results.db || { echo "❌ Falta eval-results.db"; exit 1; }
 
-  - name: Instalar dependencias de test
-    run: |
-      python -m pip install --upgrade pip
-      pip install pytest pytest-cov pyyaml
+      - name: Ejecutar tests con cobertura
+        run: |
+          pytest \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=60
 
-  - name: Ejecutar tests con cobertura
-    run: |
-      pytest \
-        --cov=. \
-        --cov-report=term-missing \
-        --cov-report=xml \
-        --cov-fail-under=60
+      - name: Subir informe de demo
+        if: matrix.python-version == '3.12' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-report-py${{ matrix.python-version }}
+          path: |
+            eval-report.md
+            eval-results.db
+          retention-days: 7
 
-  - name: Subir cobertura a Codecov (opcional)
-    if: matrix.python-version == '3.12'
-    uses: codecov/codecov-action@v4
-    continue-on-error: true
-    with:
-      files: ./coverage.xml
-      fail_ci_if_error: false
-```
+      - name: Subir cobertura a Codecov
+        if: matrix.python-version == '3.12' && success()
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
