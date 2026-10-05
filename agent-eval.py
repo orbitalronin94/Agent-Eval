@@ -115,128 +115,6 @@ class Judgment:
     score: float
     reasoning: str = ""
     raw: Any = None
-Tienes toda la razón. Al generar el archivo completo, se coló texto de la explicación dentro de una cadena de error en la función `load_config_file`, rompiendo la sintaxis de Python.
-
-He limpiado el archivo `agent-eval.py` eliminando ese texto intruso y asegurando que las cadenas estén correctamente cerradas. Aquí tienes el código corregido:
-
-```python
-#!/usr/bin/env python3
-"""
-Agent-Eval: lightweight evaluation harness for agents/RAG systems.
-Features:
-- JSONL datasets
-- HTTP and built-in agents
-- LLM-as-a-judge metrics
-- Concurrent evaluation
-- SQLite persistence with historical runs
-- Markdown reports
-- Reproducibility hashes
-- Token-based cost calculation
-- Built-in demo and self-tests
-Stdlib-first: no mandatory third-party dependencies.
-Version: 0.2.2
-"""
-from __future__ import annotations
-import argparse
-import asyncio
-import hashlib
-import json
-import os
-import re
-import sqlite3
-import statistics
-import tempfile
-import time
-import uuid
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterable
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
-__version__ = "0.2.2"
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-CONFIG: dict[str, Any] = {
-    "judge": {
-        "provider": "openai-compatible",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-        "api_key_env": "OPENAI_API_KEY",
-        "timeout_s": 60,
-        "retries": 2,
-        "temperature": 0.0,
-        "max_tokens": 800,
-        "prices": {
-            "input_per_1m": 0.0,
-            "output_per_1m": 0.0,
-        },
-    },
-    "agent": {
-        "type": "http",
-        "url": "http://localhost:8000/chat",
-        "timeout_s": 60,
-        "headers": {},
-        "prices": {
-            "input_per_1m": 0.0,
-            "output_per_1m": 0.0,
-        },
-        "request_template": {
-            "question": "{question}",
-        },
-        "answer_path": "answer",
-        "contexts_path": "contexts",
-    },
-    "dataset": {
-        "path": "dataset.jsonl",
-        "encoding": "utf-8",
-    },
-    "eval": {
-        "concurrency": 4,
-        "metrics": [
-            "faithfulness",
-            "answer_relevance",
-            "context_precision",
-            "context_recall",
-        ],
-        "pass_threshold": 0.7,
-    },
-    "output": {
-        "sqlite": "eval-results.db",
-        "report": "eval-report.md",
-        "include_raw_judge": False,
-    },
-}
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-@dataclass(slots=True)
-class EvalItem:
-    id: str
-    question: str
-    ground_truth: str | None = None
-    contexts: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-@dataclass(slots=True)
-class AgentResponse:
-    answer: str
-    contexts: list[str] = field(default_factory=list)
-    latency_ms: float = 0.0
-    tokens_in: int = 0
-    tokens_out: int = 0
-    raw: Any = None
-
-@dataclass(slots=True)
-class Judgment:
-    metric: str
-    score: float
-    reasoning: str = ""
-    raw: Any = None
     tokens_in: int = 0
     tokens_out: int = 0
 
@@ -322,7 +200,7 @@ def percentile(
     
     rank = (len(values) - 1) * (p / 100)
     lower = int(rank)
-    upper = min(lower + 1, len(values) - 1)  # CORRECCIÓN: Evitar IndexError
+    upper = min(lower + 1, len(values) - 1)
     weight = rank - lower
     return (
         values[lower] * (1 - weight)
