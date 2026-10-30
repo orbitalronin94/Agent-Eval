@@ -8,6 +8,7 @@ on:
       - "datasets/cobol2py/**"
       - "scripts/build_cobol2py_dataset.py"
       - "scripts/annotate_cobol2py.mjs"
+      - "tests/test_build_cobol2py_dataset.py"
       - ".github/workflows/cobol2py-model-dataset.yml"
   schedule:
     - cron: "23 4 * * 1"
