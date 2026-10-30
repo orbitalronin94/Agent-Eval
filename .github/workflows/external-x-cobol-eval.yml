@@ -24,8 +24,8 @@ jobs:
       fail-fast: false
       matrix:
         sample:
-          - { name: primary, skip: 0 }
-          - { name: holdout, skip: 500 }
+          - { name: primary }
+          - { name: holdout }
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -49,7 +49,7 @@ jobs:
         env:
           TARGET: ${{ inputs.target || '500' }}
           SAMPLE_NAME: ${{ matrix.sample.name }}
-          SKIP: ${{ matrix.sample.skip }}
+          SKIP: ${{ matrix.sample.name == 'primary' && '0' || inputs.target || '500' }}
         shell: bash
         run: |
           set +e
@@ -84,7 +84,7 @@ jobs:
         env:
           SAMPLE_NAME: ${{ matrix.sample.name }}
         run: |
-          report="$RUNNER_TEMP/external-corpus-artifacts/$SAMPLE_NAME/external-multilang-report.md"
+          report="$GITHUB_WORKSPACE/external-corpus-artifacts/$SAMPLE_NAME/external-multilang-report.md"
           if [ -f "$report" ]; then
             echo "## $SAMPLE_NAME sample" >> "$GITHUB_STEP_SUMMARY"
             cat "$report" >> "$GITHUB_STEP_SUMMARY"
