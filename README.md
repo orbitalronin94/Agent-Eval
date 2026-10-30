@@ -153,6 +153,24 @@ Las rutas de extracción pueden configurarse para adaptarse al formato concreto 
 
 ---
 
+## 🧬 Línea de investigación ML: Cobol2py
+
+Este repositorio también documenta una línea para construir datasets de conocimiento COBOL y evaluar su uso en modelos, manteniendo separada la investigación del proceso de traducción real.
+
+La arquitectura distingue tres responsabilidades:
+
+- **Pesos del modelo:** conocimiento lingüístico, razonamiento, reconocimiento de patrones y descubrimiento de reglas.
+- **Script traductor:** implementación determinista, versionada y comprobable de las reglas aceptadas ([Cobol2py](https://github.com/orbitalronin94/cobol2py)).
+- **Benchmark:** árbitro independiente que contrasta el comportamiento generado con GnuCOBOL y determina si una mejora funciona.
+
+La propuesta incluye ejemplos COBOL anotados, pares de comportamiento, casos mínimos, contraejemplos, catálogo de reglas y trazabilidad de benchmarks. Los holdouts deben permanecer fuera del entrenamiento y del ajuste de hipótesis.
+
+**Estado:** línea de investigación documentada; no implica que ya existan pesos entrenados ni datasets listos para fine-tuning.
+
+Consulta el [README de la línea Cobol2py ML](datasets/cobol2py/README.md) para la arquitectura, el esquema de datos previsto y el flujo de contribución.
+
+---
+
 ## 📊 Métricas
 
 | Métrica             | Qué evalúa                                                 |
