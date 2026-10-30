@@ -49,7 +49,7 @@ jobs:
           sudo apt-get install --yes gnucobol
           cobc --version
       - name: Test deterministic dataset split policy
-        run: python -m unittest tests/test_build_cobol2py_dataset.py -v
+        run: python -m unittest discover -s tests -p 'test_build_cobol2py_dataset.py' -v
       - name: Build exact behavior records
         run: |
           python scripts/build_cobol2py_dataset.py \
