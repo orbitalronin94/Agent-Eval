@@ -26,20 +26,48 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def family(case_id: str) -> str:
-    # Keep closely related numbered fixtures together to reduce split leakage.
-    return re.split(r"[-_]", case_id, maxsplit=1)[0].lower()
+def group_key(case: dict[str, Any]) -> str:
+    # Group identical semantic feature signatures, not broad ID prefixes such as "bench".
+    features = case.get("features", [])
+    normalized = sorted(
+        re.sub(r"[^a-z0-9]+", " ", str(feature).lower()).strip()
+        for feature in features
+    )
+    normalized = [feature for feature in normalized if feature]
+    return "|".join(normalized) if normalized else family(case["id"])
 
 
 def split_families(cases: list[dict[str, Any]]) -> dict[str, str]:
-    groups = sorted({family(case["id"]) for case in cases})
-    # Deterministic group-level split: two of every seven families go to dev/holdout.
-    result = {}
-    for index, group in enumerate(groups):
-        slot = index % 7
-        result[group] = "holdout" if slot == 0 else "dev" if slot == 1 else "train"
-    return result
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for case in cases:
+        grouped.setdefault(group_key(case), []).append(case)
 
+    total = len(cases)
+    targets = {"train": total * 0.70, "dev": total * 0.15, "holdout": total * 0.15}
+    counts = {"train": 0, "dev": 0, "holdout": 0}
+    assignments: dict[str, str] = {}
+
+    # Place larger semantic groups first. For each indivisible group, choose
+    # the split that minimizes normalized squared deviation from 70/15/15.
+    ordered = sorted(
+        grouped.items(),
+        key=lambda item: (-len(item[1]), hashlib.sha256(item[0].encode("utf-8")).hexdigest()),
+    )
+    for key, members in ordered:
+        size = len(members)
+        choices = []
+        for split in ("train", "dev", "holdout"):
+            projected = dict(counts)
+            projected[split] += size
+            score = sum(
+                ((projected[name] - targets[name]) / max(targets[name], 1.0)) ** 2
+                for name in targets
+            )
+            choices.append((score, split))
+        _, selected = min(choices)
+        assignments[key] = selected
+        counts[selected] += size
+    return assignments
 
 def text_or_replacement(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
@@ -75,7 +103,7 @@ def main() -> int:
             raise SystemExit(f"fixture path is missing or escapes source-root: {case['path']}")
         source_bytes = source.read_bytes()
         source_text = source_bytes.decode("utf-8")
-        group = family(case["id"])
+        group = group_key(case)
         split = splits[group]
         item: dict[str, Any] = {
             "id": case["id"],
