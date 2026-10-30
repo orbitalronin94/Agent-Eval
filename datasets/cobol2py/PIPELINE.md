@@ -50,3 +50,12 @@ The workflow does not fine-tune weights, edit Cobol2py, merge a translator PR, o
 3. Curate accepted examples and counterexamples into a versioned train corpus.
 4. Add RONIN Knowledge, scientific identifiability, behavioral robustness, adversarial security and multi-agent/RAG in separate schemas and workflows.
 5. Only then run adapter experiments and evaluate merged candidates in RONIN-IA against the unchanged baseline.
+
+
+## External X-COBOL evaluation-only track
+
+The monthly \`.github/workflows/external-x-cobol-eval.yml\` workflow reuses Cobol2py's pinned X-COBOL v2 runner to evaluate 500 primary and 500 disjoint holdout programs. It verifies the archive checksum and executes untrusted source only inside the existing network-disabled Docker sandbox with resource limits.
+
+This external corpus is **evaluation-only by default**. Its files originate from 168 upstream repositories with different licensing terms; the workflow uploads reports and hashes, never source code. It is not imported into the training corpus and its holdout is never sent to Qwen3. A program may be used for training only after its individual license and redistribution rights are reviewed and explicitly approved.
+
+The curated 105-fixture set and the external 500/500 benchmark are separate evidence streams. Never combine their pass percentages into one headline metric.
