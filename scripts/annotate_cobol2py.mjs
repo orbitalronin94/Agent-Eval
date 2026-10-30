@@ -30,7 +30,7 @@ if (!selected.length) {
 }
 
 const generator = await pipeline('text-generation', modelId, {
-  device: 'wasm',
+  device: 'cpu',
   dtype: 'q4f16',
   revision,
 });
