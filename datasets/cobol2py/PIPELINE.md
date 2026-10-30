@@ -26,7 +26,7 @@ The builder uses GnuCOBOL as the oracle. Exact matches and mismatches are comput
 
 ## Split isolation
 
-Related fixture IDs are grouped by their stable family prefix before assigning a deterministic split. The annotation script rejects any holdout record. Holdout is emitted for independent evaluation but is never passed to the model, used to choose a prompt, or used to select a translator rule.
+Cases with identical normalized semantic-feature signatures are kept together, then indivisible groups are greedily assigned to a deterministic 70/15/15 train/dev/holdout target. This avoids the earlier broad ID-prefix grouping that put 91 of 105 cases into train. The annotation script rejects any holdout record. Holdout is emitted for independent evaluation but is never passed to the model, used to choose a prompt, or used to select a translator rule.
 
 ## Epistemic and review rules
 
