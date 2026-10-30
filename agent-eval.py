@@ -835,10 +835,10 @@ Answer:
 Contexts:
 {contexts}
 Return JSON only:
-{
+{{
 "score": 0.0,
 "reasoning": "brief explanation"
-}
+}}
 Score from 0.0 to 1.0.
 """,
     "answer_relevance": """
@@ -848,10 +848,10 @@ Question:
 Answer:
 {answer}
 Return JSON only:
-{
+{{
 "score": 0.0,
 "reasoning": "brief explanation"
-}
+}}
 Score from 0.0 to 1.0.
 """,
     "context_precision": """
@@ -861,10 +861,10 @@ Question:
 Contexts:
 {contexts}
 Return JSON only:
-{
+{{
 "score": 0.0,
 "reasoning": "brief explanation"
-}
+}}
 Score from 0.0 to 1.0.
 """,
     "context_recall": """
@@ -877,10 +877,10 @@ Reference answer:
 Contexts:
 {contexts}
 Return JSON only:
-{
+{{
 "score": 0.0,
 "reasoning": "brief explanation"
-}
+}}
 Score from 0.0 to 1.0.
 """,
 }
