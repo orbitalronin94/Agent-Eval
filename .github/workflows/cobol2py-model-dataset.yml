@@ -2,6 +2,13 @@ name: Cobol2py model dataset pipeline
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "datasets/cobol2py/**"
+      - "scripts/build_cobol2py_dataset.py"
+      - "scripts/annotate_cobol2py.mjs"
+      - ".github/workflows/cobol2py-model-dataset.yml"
   schedule:
     - cron: "23 4 * * 1"
   push:
@@ -36,8 +43,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
       - name: Install GnuCOBOL
         run: |
           sudo apt-get update
