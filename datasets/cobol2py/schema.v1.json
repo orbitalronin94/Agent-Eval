@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/orbitalronin94/Agent-Eval/datasets/cobol2py/schema.v1.json",
+  "title": "Cobol2py observed behavior record",
+  "type": "object",
+  "required": [
+    "id", "source_repo", "source_path", "source_revision", "source_license",
+    "knowledge_type", "input", "target", "evidence_refs", "epistemic_status",
+    "limitations", "counterexamples", "split", "supervised_eligible"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "source_repo": {"const": "orbitalronin94/cobol2py"},
+    "source_path": {"type": "string"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_license": {"type": "string"},
+    "knowledge_type": {"enum": ["observed_behavior_pair", "counterexample", "unverified_fixture"]},
+    "dialect": {"type": "string"},
+    "compiler": {"type": "string"},
+    "input": {
+      "type": "object",
+      "required": ["language", "source"],
+      "properties": {
+        "language": {"const": "COBOL"},
+        "source": {"type": "string"},
+        "features": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "target": {
+      "type": ["object", "null"],
+      "properties": {
+        "oracle": {"const": "GnuCOBOL"},
+        "stdout_text": {"type": "string"},
+        "stdout_base64": {"type": "string"},
+        "returncode": {"type": "integer"}
+      }
+    },
+    "candidate": {"type": ["object", "null"]},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "epistemic_status": {
+      "enum": ["observed_exact_match", "observed_mismatch", "reference_compile_failed", "reference_execution_failed"]
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "counterexamples": {"type": "array", "items": {"type": "string"}},
+    "split": {"enum": ["train", "dev", "holdout"]},
+    "group_key": {"type": "string"},
+    "supervised_eligible": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

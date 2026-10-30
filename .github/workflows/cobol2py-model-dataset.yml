@@ -1,0 +1,78 @@
+name: Cobol2py model dataset pipeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "datasets/cobol2py/**"
+      - "scripts/build_cobol2py_dataset.py"
+      - "scripts/annotate_cobol2py.mjs"
+      - "tests/test_build_cobol2py_dataset.py"
+      - ".github/workflows/cobol2py-model-dataset.yml"
+  schedule:
+    - cron: "23 4 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "datasets/cobol2py/**"
+      - "scripts/build_cobol2py_dataset.py"
+      - "scripts/annotate_cobol2py.mjs"
+      - ".github/workflows/cobol2py-model-dataset.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cobol2py-model-dataset
+  cancel-in-progress: false
+
+jobs:
+  build-and-annotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: orbitalronin94/cobol2py
+          ref: main
+          path: vendor/cobol2py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install GnuCOBOL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gnucobol
+          cobc --version
+      - name: Test deterministic dataset split policy
+        run: python -m unittest discover -s tests -p 'test_build_cobol2py_dataset.py' -v
+      - name: Build exact behavior records
+        run: |
+          python scripts/build_cobol2py_dataset.py \
+            --source-root vendor/cobol2py \
+            --output artifacts/cobol2py \
+            --translator cobol2py.py \
+            --manifest benchmarks/cases.json
+      - name: Install Transformers.js
+        run: npm install --no-save --no-package-lock @huggingface/transformers@4.3.2
+      - name: Generate bounded model proposals from train/dev only
+        env:
+          MODEL_ID: onnx-community/Qwen3-0.6B-DQ-ONNX
+          MODEL_REVISION: d6beae7
+          MAX_ANNOTATIONS: "20"
+          OUTPUT_PATH: artifacts/cobol2py/model-proposals.jsonl
+        run: |
+          node --max-old-space-size=6144 scripts/annotate_cobol2py.mjs \
+            artifacts/cobol2py/train.jsonl artifacts/cobol2py/dev.jsonl
+      - name: Upload dataset, manifest and model proposals
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobol2py-model-dataset-${{ github.run_id }}
+          path: artifacts/cobol2py/
+          if-no-files-found: error
+          retention-days: 90

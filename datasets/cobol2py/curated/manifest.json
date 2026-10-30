@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "dataset": "cobol2py-curated",
+  "status": "awaiting_first_review",
+  "record_count": 0,
+  "approved_records_file": null,
+  "approved_records_sha256": null,
+  "holdout_excluded": true,
+  "model_proposals_included": false,
+  "source_corpus": "orbitalronin94/cobol2py",
+  "notes": [
+    "No generated Actions artifact is promoted automatically.",
+    "Only maintainer-reviewed train/dev records may be approved.",
+    "The independent holdout remains outside this directory."
+  ]
+}

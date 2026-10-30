@@ -1,0 +1,101 @@
+name: External X-COBOL evaluation corpus
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Number of standalone programs per split"
+        required: true
+        default: "500"
+        type: string
+  schedule:
+    - cron: "23 4 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-eval-x-cobol-v2
+  cancel-in-progress: true
+
+jobs:
+  external-corpus:
+    strategy:
+      fail-fast: false
+      matrix:
+        sample:
+          - { name: primary }
+          - { name: holdout }
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: orbitalronin94/cobol2py
+          ref: main
+          path: vendor/cobol2py
+      - name: Download pinned X-COBOL v2 archive
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://zenodo.org/records/14269462/files/COBOL_Files.zip?download=1" \
+            --output /tmp/COBOL_Files.zip
+          ls -lh /tmp/COBOL_Files.zip
+      - name: Build isolated benchmark image
+        run: |
+          docker build -f vendor/cobol2py/benchmarks/Dockerfile.external \
+            -t agent-eval-external-benchmark vendor/cobol2py
+      - name: Run benchmark without network access
+        env:
+          TARGET: ${{ inputs.target || '500' }}
+          SAMPLE_NAME: ${{ matrix.sample.name }}
+          SKIP: ${{ matrix.sample.name == 'primary' && '0' || inputs.target || '500' }}
+        shell: bash
+        run: |
+          set +e
+          OUTPUT_DIR="$GITHUB_WORKSPACE/external-corpus-artifacts"
+          CONTAINER_NAME="agent-eval-external-$GITHUB_RUN_ID-$SAMPLE_NAME"
+          mkdir -p "$OUTPUT_DIR/$SAMPLE_NAME"
+          chmod 0777 "$OUTPUT_DIR" "$OUTPUT_DIR/$SAMPLE_NAME"
+          docker run --name "$CONTAINER_NAME" \
+            --network none \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --pids-limit=128 \
+            --memory=4g \
+            --cpus=2 \
+            --read-only \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,size=3g \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/vendor/cobol2py,target=/workspace,readonly" \
+            --mount "type=bind,source=/tmp/COBOL_Files.zip,target=/input.zip,readonly" \
+            --mount "type=bind,source=$OUTPUT_DIR,target=/output" \
+            --workdir /workspace \
+            agent-eval-external-benchmark \
+            benchmarks/run_external_multilang.py \
+            --archive /input.zip \
+            --output "/output/$SAMPLE_NAME" \
+            --target "$TARGET" \
+            --skip "$SKIP"
+          benchmark_status=$?
+          docker rm "$CONTAINER_NAME" >/dev/null 2>&1
+          exit "$benchmark_status"
+      - name: Publish external corpus summary
+        if: always()
+        env:
+          SAMPLE_NAME: ${{ matrix.sample.name }}
+        run: |
+          report="$GITHUB_WORKSPACE/external-corpus-artifacts/$SAMPLE_NAME/external-multilang-report.md"
+          if [ -f "$report" ]; then
+            echo "## $SAMPLE_NAME sample" >> "$GITHUB_STEP_SUMMARY"
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report produced; inspect Docker and download logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload reports only (never source files)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-x-cobol-${{ matrix.sample.name }}
+          path: external-corpus-artifacts/${{ matrix.sample.name }}/
+          if-no-files-found: warn
+          retention-days: 90
