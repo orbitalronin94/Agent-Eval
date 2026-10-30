@@ -171,6 +171,14 @@ Consulta el [README de la línea Cobol2py ML](datasets/cobol2py/README.md) para 
 
 ---
 
+## 🧠 Otras líneas de investigación ML
+
+Además de Cobol2py, el repositorio mantiene un catálogo de datasets derivados de otros proyectos públicos: lenguaje y semántica RONIN, razonamiento científico e identificabilidad, robustez conductual de LLM, seguridad adversarial y dinámica multiagente/RAG.
+
+Consulta el [catálogo de datasets](datasets/README.md) para conocer objetivos, fuentes, esquemas, criterios de evidencia y estado de cada línea. Estas carpetas documentan planes de extracción y curación; no implican que los corpus estén ya construidos ni validados.
+
+---
+
 ## 📊 Métricas
 
 | Métrica             | Qué evalúa                                                 |
