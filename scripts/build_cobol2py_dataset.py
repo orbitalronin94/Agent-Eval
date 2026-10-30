@@ -114,6 +114,7 @@ def main() -> int:
                         "returncode": reference.returncode,
                     }
                     item["evidence_refs"].append("GnuCOBOL stdout SHA-256: " + sha256(reference.stdout))
+                    item["supervised_eligible"] = True
                     if reference.returncode is None:
                         item["epistemic_status"] = "reference_execution_failed"
                     else:
@@ -143,7 +144,6 @@ def main() -> int:
                             }
                             item["epistemic_status"] = "observed_exact_match" if exact else "observed_mismatch"
                             item["knowledge_type"] = "observed_behavior_pair" if exact else "counterexample"
-                            item["supervised_eligible"] = True
                             if not exact:
                                 item["counterexamples"].append("Generated Python differs from GnuCOBOL stdout bytes or exit status.")
         except (OSError, subprocess.TimeoutExpired) as exc:
