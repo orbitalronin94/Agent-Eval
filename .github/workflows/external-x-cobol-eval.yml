@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          OUTPUT_DIR="$RUNNER_TEMP/external-corpus-artifacts"
+          OUTPUT_DIR="$GITHUB_WORKSPACE/external-corpus-artifacts"
           CONTAINER_NAME="agent-eval-external-$GITHUB_RUN_ID-$SAMPLE_NAME"
           mkdir -p "$OUTPUT_DIR/$SAMPLE_NAME"
           chmod 0777 "$OUTPUT_DIR" "$OUTPUT_DIR/$SAMPLE_NAME"
@@ -95,7 +95,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agent-eval-x-cobol-${{ matrix.sample.name }}-$GITHUB_RUN_ID
-          path: $RUNNER_TEMP/external-corpus-artifacts/${{ matrix.sample.name }}/
+          name: agent-eval-x-cobol-${{ matrix.sample.name }}
+          path: external-corpus-artifacts/${{ matrix.sample.name }}/
           if-no-files-found: warn
           retention-days: 90
