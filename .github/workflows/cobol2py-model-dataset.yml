@@ -59,7 +59,7 @@ jobs:
             --translator cobol2py.py \
             --manifest benchmarks/cases.json
       - name: Install Transformers.js
-        run: npm install --no-save --no-package-lock @huggingface/transformers@3.7.2
+        run: npm install --no-save --no-package-lock @huggingface/transformers@4.3.2
       - name: Generate bounded model proposals from train/dev only
         env:
           MODEL_ID: onnx-community/Qwen3-0.6B-DQ-ONNX
