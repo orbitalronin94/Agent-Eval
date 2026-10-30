@@ -26,6 +26,10 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def family(case_id: str) -> str:
+    return re.split(r"[-_]", case_id, maxsplit=1)[0].lower()
+
+
 def group_key(case: dict[str, Any]) -> str:
     # Group identical semantic feature signatures, not broad ID prefixes such as "bench".
     features = case.get("features", [])
